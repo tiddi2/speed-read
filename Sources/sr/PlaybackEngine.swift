@@ -344,6 +344,10 @@ final class PlaybackEngine: ObservableObject {
             if elapsed >= Self.sentenceRestartGrace { target += 1 }
         }
         let clamped = min(max(target, 0), segments.count - 1)
+        // Only a backward step may land on the current sentence (restarting
+        // it). Forward, clamping to the last decoded sentence must not turn
+        // "next" into a jump backwards while the read-ahead catches up.
+        guard delta < 0 || clamped > index else { return }
         SRLog.event("playback.seek_sentence", [
             "delta": String(delta),
             "to": String(clamped),
