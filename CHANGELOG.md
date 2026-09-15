@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Normalization now follows the language of the read instead of always
+  injecting English. A `Reading language` preference (menu panel, or
+  `--language en|nb` on the CLI) selects the words the normalizer spells out:
+  percent forms ("50 %" → "50 prosent", "12 wt %" → "12 vektprosent",
+  LaTeX `\%`), the abbreviation table (`f.eks.` → "for eksempel", `dvs.`,
+  `jf.`, `ca.` and friends), and the logic connectives (∧ ∨ ¬ → "og", "eller",
+  "ikke"). English is the default and is byte-identical to before.
+
 - Fixed jarring pauses between sentences on the local voice at faster playback
   rates: Kokoro bakes ~0.4 s leading / ~0.6 s trailing silence into every
   generated segment, so each boundary carried ~1 s of dead air on top of the

@@ -48,12 +48,15 @@ Then, one-time setup:
 | Speak clipboard | Menu → Speak Clipboard |
 | Change hotkeys | Menu → Settings… |
 | Backend | **Auto** (cloud, falls back to local), **Cloud**, **Local 🔒** |
+| Reading language | Menu → **Reading language** (English or Norwegian) — picks the words normalization spells out ("50 %" → "50 percent" / "50 prosent") |
 
 CLI (same binary):
 
 ```sh
 /Applications/sr.app/Contents/MacOS/sr --speak article.md      # or "-" for stdin
 /Applications/sr.app/Contents/MacOS/sr --speak-clipboard --local
+# Read as Norwegian for one invocation (default: the saved preference):
+/Applications/sr.app/Contents/MacOS/sr --speak artikkel.md --language nb
 # Explicitly bypass cloud budget/large-read gates for one invocation:
 /Applications/sr.app/Contents/MacOS/sr --speak article.md --override-cost-controls
 ```

@@ -23,18 +23,24 @@ public enum Normalizer {
     }
 
     /// Full pipeline: front-end + shared back-end phases 0/A/B/C/D.
-    public static func normalize(_ text: String) -> String {
+    ///
+    /// `language` selects the words the pipeline injects (percent, logic
+    /// connectives, abbreviation expansions — see `NormalizerLexicon`).
+    /// It defaults to `.english`, which is the T-4 parity baseline.
+    public static func normalize(_ text: String,
+                                 language: SpeechLanguage = .english) -> String {
+        let lexicon = NormalizerLexicon.forLanguage(language)
         let frontend = detectFrontend(text)
         var t: String
         switch frontend {
-        case .latex: t = frontendLatex(text)
+        case .latex: t = frontendLatex(text, lexicon)
         case .markdown: t = frontendMarkdown(text)
         case .pdf: t = frontendPDF(text)
         }
         t = phase0(t)
         t = phaseA(t)
-        t = phaseB(t)
-        t = phaseC(t)
+        t = phaseB(t, lexicon)
+        t = phaseC(t, lexicon)
         t = phaseD(t)
         return t
     }

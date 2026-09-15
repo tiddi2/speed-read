@@ -213,6 +213,14 @@ struct MenuView: View {
 
     @ViewBuilder
     private var voicePickers: some View {
+        // Reading language drives normalization (F-4), not voice selection:
+        // it decides which words the normalizer injects ("50 %" → "50
+        // prosent"), so it applies to both backends.
+        Picker("Reading language", selection: $state.speechLanguage) {
+            ForEach(SpeechLanguage.allCases, id: \.self) { language in
+                Text(language.displayName).tag(language)
+            }
+        }
         if state.backendMode != .local {
             Picker("Voice", selection: $state.voiceID) {
                 ForEach(state.availableVoices) { voice in

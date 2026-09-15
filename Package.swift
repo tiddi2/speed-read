@@ -28,7 +28,7 @@ let package = Package(
             name: "SRCoreTests",
             dependencies: ["SRCore"],
             path: "Tests/SRCoreTests",
-            resources: [.copy("fixtures")]
+            resources: [.copy("fixtures"), .copy("fixtures-nb")]
         ),
         .testTarget(
             name: "SRAppTests",

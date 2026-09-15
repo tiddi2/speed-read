@@ -1,0 +1,1 @@
+Utsagnet 3 ∧ 4 er sant, mens 1 ∨ 2 er usant, og ¬ p betyr negasjon.

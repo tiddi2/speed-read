@@ -65,7 +65,8 @@ extension Normalizer {
 
     // MARK: - Phase B: punctuation, abbreviations, Miller indices, currency
 
-    static func phaseB(_ input: String) -> String {
+    static func phaseB(_ input: String,
+                       _ lexicon: NormalizerLexicon = .english) -> String {
         var t = input
         // Arc-minutes/seconds in DMS notation.
         t = t.sub("(\\d+)\u{2032}\\s*(\\d+)\u{2033}", "$1 arc minutes $2 arc seconds")
@@ -104,15 +105,7 @@ extension Normalizer {
         t = t.sub(#"\brefs?\."#) { m in m.matched.hasPrefix("refs") ? "references" : "reference" }
         t = t.sub(#"\bNo\.(?=\s*\d)"#, "Number")
         t = t.sub(#"\bno\.(?=\s*\d)"#, "number")
-        let abbrOrder: [(String, String)] = [
-            ("Sect.", "Section"), ("sect.", "section"), ("Ch.", "Chapter"), ("ch.", "chapter"),
-            ("Vol.", "Volume"), ("vol.", "volume"), ("Suppl.", "Supplementary"),
-            ("suppl.", "supplementary"), ("approx.", "approximately"), ("vs.", "versus"),
-            ("e.g.", "for example"), ("i.e.", "that is"), ("et al.", "et al"),
-            ("etc.", "et cetera"), ("cf.", "compare"), ("viz.", "namely"),
-            ("Dr.", "Doctor"), ("Prof.", "Professor"), ("Mr.", "Mister"), ("Mrs.", "Misses"),
-            ("Ms.", "Ms"), ("Sr.", "Senior"), ("Jr.", "Junior"), ("St.", "Saint"), ("Mt.", "Mount"),
-        ]
+        let abbrOrder = lexicon.abbreviations
         let abbrMap = Dictionary(uniqueKeysWithValues: abbrOrder)
         let abbrAlt = lengthDescending(abbrOrder.map(\.0))
             .map { NSRegularExpression.escapedPattern(for: $0) }
@@ -182,12 +175,11 @@ extension Normalizer {
         t = t.sub(#"\s*~(?=\s?\d)"#, " approximately ")
         t = t.sub(#"~(?!/)"#, " ")
         // Compound percentage forms (before bare % rule).
-        let pct: [String: String] = ["wt": "percent by weight", "vol": "percent by volume",
-                                     "at": "atomic percent", "mol": "mole percent"]
+        let pct = lexicon.compoundPercent
         t = t.sub(#"(\d+(?:\.\d+)?)\s*(wt|vol|at|mol)\s*%"#) { m in
             (m[1] ?? "") + " " + (pct[m[2] ?? ""] ?? "")
         }
-        t = t.sub(#"(\d+(?:\.\d+)?)\s*%"#, "$1 percent")
+        t = t.sub(#"(\d+(?:\.\d+)?)\s*%"#) { m in (m[1] ?? "") + " " + lexicon.percent }
         // DNA prime notation.
         t = t.sub(#"\b([53])'"#, "$1 prime")
         return t
@@ -269,7 +261,8 @@ extension Normalizer {
         ("L", "liters"),
     ]
 
-    static func phaseC(_ input: String) -> String {
+    static func phaseC(_ input: String,
+                       _ lexicon: NormalizerLexicon = .english) -> String {
         var t = input
         // Bra-ket notation.
         t = t.sub("\u{27e8}([^\u{27e9}]*)\u{27e9}") { m in
@@ -277,7 +270,7 @@ extension Normalizer {
         }
         // Single-character symbols to spoken form.
         for (sym, word) in symbolTable {
-            t = t.replacingOccurrences(of: sym, with: word)
+            t = t.replacingOccurrences(of: sym, with: lexicon.symbolOverrides[sym] ?? word)
         }
         // Degree+letter units (must precede bare degree).
         t = t.sub("(?<=\\d)\\s*\u{00b0}C\\b", " degrees Celsius")

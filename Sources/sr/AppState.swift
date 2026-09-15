@@ -51,6 +51,10 @@ final class AppState: ObservableObject {
     @Published var localVoiceID: String {
         didSet { settings.localVoiceID = localVoiceID }
     }
+    /// Language of the next read; picks the normalizer's lexicon (F-4).
+    @Published var speechLanguage: SpeechLanguage {
+        didSet { settings.speechLanguage = speechLanguage }
+    }
     @Published var modelID: String {
         didSet { settings.modelID = modelID }
     }
@@ -98,6 +102,7 @@ final class AppState: ObservableObject {
         voiceID = store.voiceID
         localVoiceID = store.localVoiceID
         modelID = store.modelID
+        speechLanguage = store.speechLanguage
         backendMode = store.backendMode
         autoDeleteHistory = store.autoDeleteHistory
         cacheEnabled = store.cacheEnabled
@@ -254,7 +259,8 @@ final class AppState: ObservableObject {
                 SRLog.event("routing.blocked", ["source": method.rawValue])
                 return
             }
-            speak(raw, captureMethod: method, routingAction: routingAction)
+            speak(raw, language: speechLanguage,
+                  captureMethod: method, routingAction: routingAction)
         }
     }
 
@@ -290,6 +296,7 @@ final class AppState: ObservableObject {
     }
 
     private func speak(_ raw: String,
+                       language: SpeechLanguage,
                        captureMethod: SelectionCapture.Method,
                        routingAction: RoutingPolicy.Action) {
         guard raw.count <= Chunker.maxReadCharacters else {
@@ -304,7 +311,7 @@ final class AppState: ObservableObject {
             let worker = Task.detached(priority: .userInitiated) {
                 () -> (String, [Chunk])? in
                 guard !Task.isCancelled else { return nil }
-                let normalized = Normalizer.normalize(raw)
+                let normalized = Normalizer.normalize(raw, language: language)
                 guard !Task.isCancelled else { return nil }
                 let chunks = Chunker.split(normalized)
                 guard !Task.isCancelled else { return nil }

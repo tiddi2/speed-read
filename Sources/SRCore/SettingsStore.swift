@@ -22,6 +22,7 @@ public struct SettingsStore {
         static let cacheEnabled = "cacheEnabled"
         static let backendMode = "backendMode"
         static let localVoiceID = "localVoiceID"
+        static let speechLanguage = "speechLanguage"
     }
 
     /// Backend modes (F-3): Auto = cloud with local fallback.
@@ -86,6 +87,15 @@ public struct SettingsStore {
     public var localVoiceID: String {
         get { defaults.string(forKey: Key.localVoiceID) ?? "bf_lily" }
         nonmutating set { defaults.set(newValue, forKey: Key.localVoiceID) }
+    }
+
+    /// Language a read is spoken in; selects the normalizer's lexicon (F-4).
+    public var speechLanguage: SpeechLanguage {
+        get {
+            SpeechLanguage(rawValue: defaults.string(forKey: Key.speechLanguage) ?? "")
+                ?? .english
+        }
+        nonmutating set { defaults.set(newValue.rawValue, forKey: Key.speechLanguage) }
     }
 
     public var voiceSettings: VoiceSettings {
