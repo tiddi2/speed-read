@@ -27,6 +27,9 @@ done
 cp daemon/sr_tts_server.py "$BUNDLE_DIR/Contents/Resources/"
 cp daemon/requirements.lock "$BUNDLE_DIR/Contents/Resources/kokoro-requirements.lock"
 
+# App icon (Dock, Finder, ⌘-Tab, About). Regenerate with scripts/make-icon.py.
+cp resources/sr.icns "$BUNDLE_DIR/Contents/Resources/sr.icns"
+
 cat > "$BUNDLE_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -36,6 +39,8 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<'PLIST'
     <key>CFBundleDisplayName</key>       <string>sr</string>
     <key>CFBundleIdentifier</key>        <string>com.patrickellis.sr</string>
     <key>CFBundleExecutable</key>        <string>sr</string>
+    <key>CFBundleIconFile</key>          <string>sr</string>
+    <key>CFBundleIconName</key>          <string>sr</string>
     <key>CFBundlePackageType</key>       <string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key>           <string>1</string>

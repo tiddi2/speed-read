@@ -235,7 +235,10 @@ enum HeadlessCLI {
             print("input too large (maximum \(Chunker.maxReadCharacters) characters)")
             return 1
         }
-        let normalized = Normalizer.normalize(text, language: language)
+        // Same two steps as the GUI: normalize, then apply the language's
+        // custom respellings before anything is chunked or hashed (F-13).
+        let normalized = PronunciationStore.shared.applyAliases(
+            to: Normalizer.normalize(text, language: language), language: language)
         guard normalized.count <= Chunker.maxReadCharacters else {
             print("input too large (maximum \(Chunker.maxReadCharacters) characters)")
             return 1
@@ -256,12 +259,19 @@ enum HeadlessCLI {
         let deleteHistory = settings.autoDeleteHistory
 
         let model = settings.modelID(for: language)
+        // Phoneme rules ride along only on a model that acts on them, and
+        // only once they have been uploaded — the CLI uses whatever the GUI
+        // last synced rather than uploading mid-read.
+        let locator = ElevenLabsProvider.supportsPhonemeRules(model)
+            ? PronunciationStore.shared.locator(for: language) : nil
         let cloud = SynthesisPipeline.Route(
-            provider: ElevenLabsProvider(modelID: model, language: language),
+            provider: ElevenLabsProvider(modelID: model, language: language,
+                                         pronunciationLocator: locator),
             voiceID: settings.voiceID(for: language),
             modelID: model,
             languageCode: ElevenLabsProvider.lockedLanguageCode(
-                for: language, modelID: model) ?? "")
+                for: language, modelID: model) ?? "",
+            variant: locator?.versionID ?? "")
         // Same rule as the GUI: a language the local model cannot speak gets
         // no local route at all, rather than an English voice reading it.
         var local: SynthesisPipeline.Route?
