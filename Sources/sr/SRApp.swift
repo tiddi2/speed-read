@@ -502,7 +502,7 @@ private struct GeneralSettings: View {
                     .disabled(!state.readerOverlayEnabled)
                 Toggle("Next sentence", isOn: $state.readerShowsNextSentence)
                     .disabled(!state.readerOverlayEnabled)
-                Text("A borderless window in the top-right of the screen the selection is on — drag it anywhere and sr remembers. It also shows the speed (change it with the Faster / Slower hotkeys) and which language is being read; neither is editable mid-read.")
+                Text("A borderless window in the top-right of the screen the selection is on — drag it anywhere and sr remembers. Sentences are shown whole and the window grows to fit them, so nothing is cut off. It also shows the speed (change it with the Faster / Slower hotkeys) and which language is being read; neither is editable mid-read.")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Reset Overlay Position") { state.resetReaderOverlayPosition() }
             }

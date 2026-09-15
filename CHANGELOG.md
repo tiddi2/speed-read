@@ -7,7 +7,10 @@
   the top-right of the display the selection was made on, can be dragged
   anywhere (sr remembers the spot relative to that screen's corner), and shows
   the previous, current and next sentence — each of the three can be switched
-  off in Settings → General, as can the overlay itself. It carries
+  off in Settings → General, as can the overlay itself. All three are shown
+  whole — nothing is truncated — and the window's height follows the text; a
+  sentence too long for the screen makes the pane scroll and follow the read
+  rather than clip. It carries
   previous-sentence / play-pause / next-sentence buttons, a progress bar, the
   sentence counter, and read-only readouts of the playback speed and the
   language being read. The overlay never takes keyboard focus, so the selection

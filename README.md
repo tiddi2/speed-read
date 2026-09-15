@@ -12,7 +12,7 @@ sr is a privacy-first text-to-speech utility for macOS. It lives in your menu ba
 - **Top-tier voices** — ElevenLabs (Flash v2.5 / Turbo / Multilingual v2 / v3) with your account's full voice list, or the local Kokoro model (free, offline, Apple Silicon).
 - **Instant, pitch-perfect speed** — 0.5×–3.0× applied client-side with time-domain (WSOLA) stretching. Changing speed never re-generates audio and never costs credits.
 - **Full transport** — play/pause, ±1 sentence, ±5 s seek, restart, stop, live progress, from the menu bar panel or the keyboard.
-- **See what you're hearing** — an optional borderless reader floats over whatever you're reading from, showing the previous, current and next sentence with the spoken word highlighted, plus play/pause, sentence stepping, speed and language. It never takes focus, so your selection survives.
+- **See what you're hearing** — an optional borderless reader floats over whatever you're reading from, showing the previous, current and next sentence *in full* with the spoken word highlighted, plus play/pause, sentence stepping, speed and language. Nothing is truncated: the window sizes itself to the text. It never takes focus, so your selection survives.
 - **Smart text cleanup** — PDF line-break repair, LaTeX math to spoken English, Markdown stripping, citations, units, URLs — ported from [Speak11](https://github.com/smcantab/speak11) and parity-tested.
 - **Cache-first** — repeated reads are instant and free (content-addressed local cache, size-capped, purgeable, disableable, with burst writes coalesced into one maintenance sweep).
 - **Bounded read-ahead** — prepares only the current sentence plus five ahead; pausing prevents new requests and stopping cancels pending work. Requests already sent may still be billed.
@@ -66,6 +66,12 @@ next time. Settings → General switches the overlay off, or any of the three
 sentence lines individually. The speed and language it shows are readouts, not
 controls: the language is fixed for the life of a read (it is chosen by which
 hotkey started it), and the speed is changed with ⌥⇧[ / ⌥⇧].
+
+All three sentences are shown whole — no ellipsis, no clipped line — and the
+window's height follows the text. Only a sentence long enough to fill the
+screen (the chunker allows up to 5,000 characters, which means minified text
+or OCR without punctuation, not prose) stops it growing; then the pane scrolls
+and keeps the sentence being read in view, so the text is still all there.
 
 Two things worth knowing about it:
 
