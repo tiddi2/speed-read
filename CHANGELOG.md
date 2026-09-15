@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Normalization now follows the language of the read instead of always injecting
+  English words into it. The words the normalizer spells out come from a
+  per-language table: percent forms ("50 %" → "50 prosent", "12 wt %" →
+  "12 vektprosent", LaTeX `\%`), the abbreviation table (`f.eks.` → "for
+  eksempel", plus `dvs.`, `jf.`, `ca.`, `osv.` and Norwegian readings of the
+  Latin forms), and the logic connectives (∧ ∨ ¬ → "og", "eller", "ikke"). The
+  language is the one the read was started with, so there is no new setting;
+  English output is byte-identical to before.
+
 - Added `make update` for routine updates of an installed sr.app: pull, rebuild,
   swap the bundle in place, relaunch. It quits sr the way the Quit menu item
   does, so `applicationShouldTerminate` runs and pending ElevenLabs history

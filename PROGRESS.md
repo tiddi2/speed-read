@@ -68,4 +68,14 @@ Resolved in the 2026-07-09 audit-fix pass:
 ## Deviations from PRD
 
 - **Normalizer** (documented in `Normalizer.swift`): no ftfy mojibake repair (no Swift equivalent; clipboard text is valid UTF-8); LaTeX accents use the reference's fallback table rather than pylatexenc. 30/30 parity fixtures pass byte-for-byte with these deviations baked into fixture generation.
+- **Normalizer language** (extension beyond the reference, which is English-only):
+  `Normalizer.normalize` takes a `SpeechLanguage` that defaults to `.english`, so
+  the parity fixtures stay byte-identical. `NormalizerLexicon` holds the words
+  each language injects; Norwegian overrides the percent forms (bare `%`, the
+  `wt/vol/at/mol` compounds, LaTeX `\%`), the abbreviation table, and the logic
+  connectives (∧ ∨ ¬). Fixtures for it live in `Tests/SRCoreTests/fixtures-no/`.
+  Still English in a Norwegian read, in rough order of how often they show up:
+  `Fig./Eq./Ref./No.` expansion, range words ("Figures 1 through 3", "1 to 5"),
+  currency names, bare-URL "dot"/"slash", SI unit names, Greek letter names, and
+  the whole LaTeX math-to-speech path (`MathSpeech`).
 - **Toolchain**: CLT-only (no Xcode) → KeyboardShortcuts pinned to 1.15.0 (newer tags use #Preview macros that need Xcode's plugin) and tests use Swift Testing, not XCTest (`make test` wires the framework paths). Revisit both when Xcode is installed for Phase 3 signing.

@@ -10,9 +10,14 @@ enum FixtureLoader {
         let expected: String
     }
 
-    static func pairs() throws -> [Pair] {
+    /// English parity fixtures (T-4).
+    static let englishDirectory = "fixtures"
+    /// Norwegian fixtures for the language-aware normalizer.
+    static let norwegianDirectory = "fixtures-no"
+
+    static func pairs(in subdirectory: String = englishDirectory) throws -> [Pair] {
         guard let urls = Bundle.module.urls(forResourcesWithExtension: "txt",
-                                            subdirectory: "fixtures") else {
+                                            subdirectory: subdirectory) else {
             return []
         }
         let inputs = urls
@@ -30,11 +35,12 @@ enum FixtureLoader {
         }
     }
 
-    static func names() -> [String] {
-        (try? pairs().map(\.name)) ?? []
+    static func names(in subdirectory: String = englishDirectory) -> [String] {
+        (try? pairs(in: subdirectory).map(\.name)) ?? []
     }
 
-    static func pair(named name: String) -> Pair? {
-        (try? pairs())?.first { $0.name == name }
+    static func pair(named name: String,
+                     in subdirectory: String = englishDirectory) -> Pair? {
+        (try? pairs(in: subdirectory))?.first { $0.name == name }
     }
 }

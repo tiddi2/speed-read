@@ -62,6 +62,10 @@ Settings → Voices warns if you pick Multilingual v2 or v3, which detect the
 language from the text instead. Kokoro has no Norwegian voice, so Norwegian
 reads always use ElevenLabs and are refused (not substituted) in Local-Only mode.
 
+sr's own text normalization follows the same language: the words it spells out
+before the voice ever sees them — "50 %", `f.eks.`, `∧` — are Norwegian in a
+Norwegian read and English in an English one.
+
 CLI (same binary):
 
 ```sh
