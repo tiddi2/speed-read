@@ -63,11 +63,14 @@ private final class PipelineCallbackRecorder: @unchecked Sendable {
         let mode = HeadlessCLI.Mode(arguments: [
             "sr", "--speak", "article.md", "--local", "--override-cost-controls",
         ])
-        guard case .speak(let source, let forceLocal, let overrideCostControls) = mode else {
+        guard case .speak(let source, let language, let forceLocal,
+                          let overrideCostControls) = mode else {
             Issue.record("expected speak mode")
             return
         }
         #expect(source == "article.md")
+        // No --lang means English, never "let the model decide".
+        #expect(language == .english)
         #expect(forceLocal)
         #expect(overrideCostControls)
     }
