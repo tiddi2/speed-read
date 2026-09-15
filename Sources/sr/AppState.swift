@@ -530,7 +530,7 @@ final class AppState: ObservableObject {
         let preparation = preparationGeneration
         preparationTask?.cancel()
         preparationTask = Task { @MainActor [weak self] in
-            let pronunciations = self?.pronunciations ?? .shared
+            let pronunciations: PronunciationStore = self?.pronunciations ?? .shared
             let worker = Task.detached(priority: .userInitiated) {
                 () -> (String, [Chunk])? in
                 guard !Task.isCancelled else { return nil }
