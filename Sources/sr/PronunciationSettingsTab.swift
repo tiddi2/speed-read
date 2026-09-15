@@ -129,13 +129,13 @@ struct PronunciationSettingsTab: View {
     @ViewBuilder
     private var statusFootnote: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if state.pronunciationSyncing {
+            if state.isSyncingPronunciations(for: language) {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
                     Text("Sending phoneme rules to ElevenLabs…").font(.caption)
                 }
-            } else if !state.pronunciationStatus.isEmpty {
-                Text(state.pronunciationStatus)
+            } else if !state.pronunciationStatus(for: language).isEmpty {
+                Text(state.pronunciationStatus(for: language))
                     .font(.caption).foregroundStyle(.secondary)
             }
             if state.phonemeRulesAreIgnored(language) {

@@ -88,12 +88,23 @@ final class AppState: ObservableObject {
     // Mirrored here so SwiftUI re-renders on an edit; PronunciationStore is
     // the durable copy and the one the read path consults.
     @Published private var pronunciationRules: [SpeechLanguage: [PronunciationRule]]
-    @Published var pronunciationStatus: String = ""
-    @Published private(set) var pronunciationSyncing = false
-    private var pronunciationSyncTask: Task<Void, Never>?
+    // Status and sync are per language: both languages sync at launch, and
+    // one shared slot would mean the second upload cancelled the first and
+    // overwrote whatever the first had to say.
+    @Published private var pronunciationStatusByLanguage: [SpeechLanguage: String] = [:]
+    @Published private var pronunciationSyncingLanguages: Set<SpeechLanguage> = []
+    private var pronunciationSyncTasks: [SpeechLanguage: Task<Void, Never>] = [:]
 
     func rules(for language: SpeechLanguage) -> [PronunciationRule] {
         pronunciationRules[language] ?? []
+    }
+
+    func pronunciationStatus(for language: SpeechLanguage) -> String {
+        pronunciationStatusByLanguage[language] ?? ""
+    }
+
+    func isSyncingPronunciations(for language: SpeechLanguage) -> Bool {
+        pronunciationSyncingLanguages.contains(language)
     }
 
     func setRules(_ rules: [PronunciationRule], for language: SpeechLanguage) {
@@ -116,26 +127,29 @@ final class AppState: ObservableObject {
     /// rather than having their words uploaded behind the switch (P-8).
     func syncPronunciations(for language: SpeechLanguage) {
         guard pronunciations.needsPhonemeSync(for: language) else {
-            pronunciationStatus = ""
+            pronunciationStatusByLanguage[language] = ""
             return
         }
         guard backendMode != .local else {
-            pronunciationStatus =
+            pronunciationStatusByLanguage[language] =
                 "Phoneme rules stay local until you leave Local-Only mode — respellings still apply."
             return
         }
-        pronunciationSyncTask?.cancel()
-        pronunciationSyncing = true
-        pronunciationSyncTask = Task { @MainActor [weak self] in
+        pronunciationSyncTasks[language]?.cancel()
+        pronunciationSyncingLanguages.insert(language)
+        pronunciationSyncTasks[language] = Task { @MainActor [weak self] in
             let outcome = await PronunciationSyncer.sync(language: language)
             guard let self, !Task.isCancelled else { return }
-            self.pronunciationSyncing = false
+            self.pronunciationSyncTasks[language] = nil
+            self.pronunciationSyncingLanguages.remove(language)
             switch outcome {
-            case .upToDate: self.pronunciationStatus = ""
+            case .upToDate:
+                self.pronunciationStatusByLanguage[language] = ""
             case .uploaded:
-                self.pronunciationStatus = "Phoneme rules sent to ElevenLabs."
+                self.pronunciationStatusByLanguage[language] =
+                    "Phoneme rules sent to ElevenLabs."
             case .failed(let message):
-                self.pronunciationStatus = message
+                self.pronunciationStatusByLanguage[language] = message
             }
         }
     }
