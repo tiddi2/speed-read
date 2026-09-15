@@ -51,7 +51,11 @@ struct SRApp: App {
     }
 }
 
-// MARK: - Menu panel (quick controls only; text input lives in Settings)
+// MARK: - Menu panel
+//
+// Transport only. Everything that configures sr — voices, models, backend,
+// privacy, cost, hotkeys — lives in Settings (⌘,) so the panel stays a remote
+// control you can hit in one motion instead of a preferences sheet.
 
 struct MenuView: View {
     @EnvironmentObject var state: AppState
@@ -63,18 +67,13 @@ struct MenuView: View {
             progressSection
             speedSection
             Divider()
-            speakClipboardButton
-            backendPicker
-            voicePickers
-            Divider()
-            privacySection
+            clipboardSection
             statusSection
             Divider()
             bottomRow
         }
         .padding(14)
         .frame(width: 336, alignment: .leading)
-        .onAppear { state.refreshVoices() }
     }
 
     // MARK: Transport (F-7) — the panel's hero: open menu → hit a control
@@ -82,31 +81,41 @@ struct MenuView: View {
     // hover rings for click confidence.
 
     private var transportCluster: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             Spacer(minLength: 0)
             TransportButton(systemName: "backward.end.fill",
-                            size: 30, iconSize: 11,
+                            size: 28, iconSize: 10,
                             help: "Restart from the top") {
                 state.playback.restart()
             }
+            TransportButton(systemName: "backward.frame.fill",
+                            size: 32, iconSize: 12,
+                            help: "Previous sentence") {
+                state.playback.seekSentence(by: -1)
+            }
             TransportButton(systemName: "gobackward.5",
-                            size: 38, iconSize: 17,
+                            size: 36, iconSize: 15,
                             help: "Back 5 seconds") {
                 state.playback.seek(by: -5)
             }
             TransportButton(systemName: isPaused || !state.playback.isActive
                                 ? "play.fill" : "pause.fill",
-                            size: 46, iconSize: 19, prominent: true,
+                            size: 44, iconSize: 18, prominent: true,
                             help: isPaused ? "Resume" : "Pause") {
                 state.playback.togglePauseResume()
             }
             TransportButton(systemName: "goforward.5",
-                            size: 38, iconSize: 17,
+                            size: 36, iconSize: 15,
                             help: "Forward 5 seconds") {
                 state.playback.seek(by: 5)
             }
+            TransportButton(systemName: "forward.frame.fill",
+                            size: 32, iconSize: 12,
+                            help: "Next sentence") {
+                state.playback.seekSentence(by: 1)
+            }
             TransportButton(systemName: "stop.fill",
-                            size: 30, iconSize: 11,
+                            size: 28, iconSize: 10,
                             help: "Stop") {
                 state.stop()
             }
@@ -140,10 +149,15 @@ struct MenuView: View {
                 .foregroundStyle(.secondary)
             }
         } else {
-            Text("Select text anywhere, then press \(shortcutHint)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .center)
+            VStack(spacing: 2) {
+                Text("Select text anywhere, then press")
+                ForEach(SpeechLanguage.allCases) { language in
+                    Text("\(shortcutHint(for: language)) for \(language.displayName)")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 
@@ -152,8 +166,9 @@ struct MenuView: View {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
-    private var shortcutHint: String {
-        KeyboardShortcuts.getShortcut(for: .speakOrStop)?.description ?? "the hotkey (unset)"
+    private func shortcutHint(for language: SpeechLanguage) -> String {
+        KeyboardShortcuts.getShortcut(for: ShortcutCatalog.speakName(for: language))?
+            .description ?? "an unset hotkey"
     }
 
     // MARK: Speed (F-8) — slider for fine control, chips for the speeds
@@ -182,77 +197,36 @@ struct MenuView: View {
         }
     }
 
-    private var speakClipboardButton: some View {
-        Button {
-            state.speakClipboard()
-        } label: {
-            Label("Speak Clipboard", systemImage: "doc.on.clipboard")
-                .frame(maxWidth: .infinity)
-        }
-        .controlSize(.large)
-    }
+    // MARK: Clipboard — one button per language. sr never guesses which
+    // language a clipboard holds (see SpeechLanguage).
 
-    // MARK: Backend & voices (F-3, P-8 Local-Only)
-
-    private var backendPicker: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            BackendSelector(selection: $state.backendMode)
-            Text(backendCaption)
-                .font(.caption2).foregroundStyle(.tertiary)
-                .padding(.leading, 2)
-        }
-    }
-
-    private var backendCaption: String {
-        switch state.backendMode {
-        case .auto: return "Cloud voices, local fallback if the cloud fails"
-        case .cloud: return "ElevenLabs only"
-        case .local: return "Nothing ever leaves this Mac"
-        }
-    }
-
-    @ViewBuilder
-    private var voicePickers: some View {
-        if state.backendMode != .local {
-            Picker("Voice", selection: $state.voiceID) {
-                ForEach(state.availableVoices) { voice in
-                    Text(voice.name).tag(voice.id)
-                }
-                if !state.availableVoices.contains(where: { $0.id == state.voiceID }) {
-                    Text("Custom (\(String(state.voiceID.prefix(8)))…)").tag(state.voiceID)
-                }
-            }
-            Picker("Model", selection: $state.modelID) {
-                ForEach(ElevenLabsProvider.models, id: \.id) { model in
-                    Text(model.name).tag(model.id)
-                }
-            }
-        }
-        if state.kokoroInstalled && state.backendMode != .cloud {
-            Picker("Local voice", selection: $state.localVoiceID) {
-                ForEach(KokoroProvider.presetVoices) { voice in
-                    Text(voice.name).tag(voice.id)
+    private var clipboardSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Speak Clipboard")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                ForEach(SpeechLanguage.allCases) { language in
+                    Button {
+                        state.speakClipboard(language: language)
+                    } label: {
+                        Text(language.displayName)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.large)
+                    .help(clipboardHelp(for: language))
                 }
             }
         }
     }
 
-    // MARK: Privacy & status (P-6, P-10, C-1/C-2)
-
-    private var privacySection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle("Auto-delete ElevenLabs history", isOn: $state.autoDeleteHistory)
-                .toggleStyle(.checkbox)
-            Toggle("Cache audio", isOn: $state.cacheEnabled)
-                .toggleStyle(.checkbox)
-                .help("Disable for sensitive sessions — nothing is written to disk")
-            if !state.historyStatus.isEmpty {
-                Text(state.historyStatus)
-                    .font(.caption2).foregroundStyle(.tertiary)
-            }
-        }
-        .font(.callout)
+    private func clipboardHelp(for language: SpeechLanguage) -> String {
+        let shortcut = KeyboardShortcuts.getShortcut(
+            for: ShortcutCatalog.clipboardName(for: language))
+        return shortcut.map { "Speak the clipboard in \(language.displayName) (\($0))" }
+            ?? "Speak the clipboard in \(language.displayName)"
     }
+
+    // MARK: Status — only what needs acting on right now.
 
     @ViewBuilder
     private var statusSection: some View {
@@ -274,25 +248,6 @@ struct MenuView: View {
                 Text(installStatus).font(.caption).foregroundStyle(.secondary)
             }
         }
-        if !state.kokoroInstalled && state.kokoroInstallStatus == nil {
-            Button(state.kokoroNeedsUpdate
-                   ? "Update Local Voice Runtime…"
-                   : "Install Local Voice (Kokoro, ~330 MB)…") {
-                state.installKokoro()
-            }
-            .buttonStyle(.borderless)
-            .font(.callout)
-        }
-        HStack(spacing: 4) {
-            if let remaining = state.creditsRemaining, let limit = state.creditsLimit {
-                Text("Credits \(remaining.formatted()) / \(limit.formatted())")
-            }
-            let spent = state.ledger.spentToday
-            if spent > 0 {
-                Text("· \(spent.formatted()) today")
-            }
-        }
-        .font(.caption2).foregroundStyle(.tertiary)
     }
 
     private var bottomRow: some View {
@@ -466,9 +421,233 @@ private struct SpeedChip: View {
     }
 }
 
-// MARK: - Settings window
+// MARK: - Settings window (⌘,)
 
 struct SettingsView: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        TabView {
+            GeneralSettings()
+                .tabItem { Label("General", systemImage: "gearshape") }
+            VoiceSettingsTab()
+                .tabItem { Label("Voices", systemImage: "waveform") }
+            ShortcutSettings()
+                .tabItem { Label("Shortcuts", systemImage: "keyboard") }
+            PrivacySettings()
+                .tabItem { Label("Privacy", systemImage: "hand.raised") }
+            CostSettings()
+                .tabItem { Label("Cost", systemImage: "creditcard") }
+        }
+        .frame(width: 520, height: 460)
+        .onAppear {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            state.refreshVoices()
+            // The Settings window can open behind the menu bar panel;
+            // bring it to front once it exists.
+            DispatchQueue.main.async {
+                NSApp.windows
+                    .first { $0.identifier?.rawValue.contains("Settings") == true || $0.title.contains("Settings") }?
+                    .makeKeyAndOrderFront(nil)
+            }
+        }
+        .onDisappear {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+}
+
+// MARK: General (F-3, P-8, P-12)
+
+private struct GeneralSettings: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        Form {
+            Section("Backend") {
+                BackendSelector(selection: $state.backendMode)
+                Text(backendCaption)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Offline voice") {
+                if let installStatus = state.kokoroInstallStatus {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(installStatus).font(.callout)
+                    }
+                } else if state.kokoroInstalled && !state.kokoroNeedsUpdate {
+                    Label("Kokoro installed", systemImage: "checkmark.circle")
+                        .foregroundStyle(.green)
+                } else {
+                    Button(state.kokoroNeedsUpdate
+                           ? "Update Local Voice Runtime…"
+                           : "Install Local Voice (Kokoro, ~330 MB)…") {
+                        state.installKokoro()
+                    }
+                }
+                Text("Kokoro speaks English only. Norwegian reads always use ElevenLabs, and are refused in Local-Only mode rather than read with an English voice.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Permissions") {
+                if state.accessibilityGranted {
+                    Label("Accessibility granted", systemImage: "checkmark.circle")
+                        .foregroundStyle(.green)
+                } else {
+                    Button("Grant Accessibility…") { state.promptForAccessibility() }
+                    Text("Required to read the selection in other apps. The hotkeys themselves work without it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var backendCaption: String {
+        switch state.backendMode {
+        case .auto: return "Cloud voices, local fallback if the cloud fails"
+        case .cloud: return "ElevenLabs only"
+        case .local: return "Nothing ever leaves this Mac"
+        }
+    }
+}
+
+// MARK: Voices — one profile per language (F-10)
+
+private struct VoiceSettingsTab: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        Form {
+            ForEach(SpeechLanguage.allCases) { language in
+                Section(language.displayName) {
+                    Picker("Voice", selection: voiceBinding(language)) {
+                        ForEach(state.availableVoices) { voice in
+                            Text(voice.name).tag(voice.id)
+                        }
+                        let selected = state.voiceID(for: language)
+                        if !state.availableVoices.contains(where: { $0.id == selected }) {
+                            Text("Custom (\(String(selected.prefix(8)))…)").tag(selected)
+                        }
+                    }
+                    Picker("Model", selection: modelBinding(language)) {
+                        ForEach(ElevenLabsProvider.models, id: \.id) { model in
+                            Text(modelLabel(model)).tag(model.id)
+                        }
+                    }
+                    if !state.languageIsLocked(language) {
+                        Label(
+                            "This model can't be pinned to \(language.displayName) — ElevenLabs will detect the language from the text instead. Pick Flash v2.5 or Turbo v2.5 to lock it.",
+                            systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    localVoiceRow(language)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private func localVoiceRow(_ language: SpeechLanguage) -> some View {
+        let localVoices = KokoroProvider.presetVoices(for: language)
+        if localVoices.isEmpty {
+            Text("No offline voice — \(language.displayName) is cloud-only.")
+                .font(.caption).foregroundStyle(.secondary)
+        } else if state.kokoroInstalled {
+            Picker("Offline voice", selection: localVoiceBinding(language)) {
+                ForEach(localVoices) { voice in
+                    Text(voice.name).tag(voice.id)
+                }
+            }
+        }
+    }
+
+    private func modelLabel(_ model: (name: String, id: String)) -> String {
+        ElevenLabsProvider.supportsLanguageLock(model.id)
+            ? model.name
+            : "\(model.name) — no language lock"
+    }
+
+    private func voiceBinding(_ language: SpeechLanguage) -> Binding<String> {
+        Binding(get: { state.voiceID(for: language) },
+                set: { state.setVoiceID($0, for: language) })
+    }
+
+    private func modelBinding(_ language: SpeechLanguage) -> Binding<String> {
+        Binding(get: { state.modelID(for: language) },
+                set: { state.setModelID($0, for: language) })
+    }
+
+    private func localVoiceBinding(_ language: SpeechLanguage) -> Binding<String> {
+        Binding(get: { state.localVoiceID(for: language) ?? "" },
+                set: { state.setLocalVoiceID($0, for: language) })
+    }
+}
+
+// MARK: Shortcuts — every hotkey sr registers is rebindable here
+
+private struct ShortcutSettings: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        Form {
+            ForEach(ShortcutCatalog.groups, id: \.title) { group in
+                Section(group.title) {
+                    ForEach(group.bindings) { binding in
+                        LabeledContent(binding.title) {
+                            ShortcutRecorderField(name: binding.name)
+                        }
+                        if let note = binding.note {
+                            Text(note).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            Section {
+                Button("Reset Shortcuts to Defaults") {
+                    state.resetShortcutsToDefaults()
+                }
+                Text("Click a field and type the combination. ⎋ cancels, ⌫ clears it. A cleared shortcut simply never fires.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: Privacy (P-6, P-10)
+
+private struct PrivacySettings: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        Form {
+            Section("ElevenLabs history") {
+                Toggle("Auto-delete generations from my account", isOn: $state.autoDeleteHistory)
+                if !state.historyStatus.isEmpty {
+                    Text(state.historyStatus)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Section("Audio cache") {
+                Toggle("Cache audio on disk", isOn: $state.cacheEnabled)
+                    .help("Disable for sensitive sessions — nothing is written to disk")
+                Button("Purge Audio Cache") { state.purgeCache() }
+                Text("Cached audio makes a repeated read instant and free. Filenames are hashes, never text.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: Cost (C-1, C-2, C-3) + the API key (P-1)
+
+private struct CostSettings: View {
     @EnvironmentObject var state: AppState
     @State private var apiKeyDraft = ""
     @State private var apiKeySavedFlash = false
@@ -476,42 +655,13 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Hotkeys") {
-                LabeledContent("Speak / Stop:") {
-                    ShortcutRecorderField(name: .speakOrStop)
-                }
-                LabeledContent("Pause / Resume:") {
-                    ShortcutRecorderField(name: .pauseResume)
-                }
-                Button("Reset Shortcuts to Defaults") {
-                    state.resetShortcutsToDefaults()
-                }
-            }
-
-            Section("ElevenLabs") {
+            Section("ElevenLabs API key") {
                 HStack {
                     SecureField(
                         KeychainStore.maskedAPIKey() ?? "API key",
                         text: $apiKeyDraft
                     )
-                    Button("Save") {
-                        let trimmed = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !trimmed.isEmpty else { return }
-                        guard KeychainStore.saveAPIKey(trimmed) else {
-                            apiKeySavedFlash = false
-                            apiKeySaveError = "Keychain rejected the update. Unlock your login keychain and try again."
-                            return
-                        }
-                        apiKeyDraft = ""
-                        apiKeySavedFlash = true
-                        apiKeySaveError = nil
-                        state.refreshCredits()
-                        state.refreshVoices(force: true)
-                        Task { @MainActor in
-                            try? await Task.sleep(for: .seconds(2))
-                            apiKeySavedFlash = false
-                        }
-                    }
+                    Button("Save") { saveAPIKey() }
                 }
                 if apiKeySavedFlash {
                     Text("Saved to Keychain").font(.caption).foregroundStyle(.green)
@@ -521,9 +671,15 @@ struct SettingsView: View {
                 }
                 Text("Stored only in the macOS Keychain. Scope the key to Text-to-Speech + User Read.")
                     .font(.caption).foregroundStyle(.secondary)
+                if let remaining = state.creditsRemaining, let limit = state.creditsLimit {
+                    LabeledContent("Credits") {
+                        Text("\(remaining.formatted()) of \(limit.formatted()) left")
+                            .monospacedDigit()
+                    }
+                }
             }
 
-            Section("Cost") {
+            Section("Budget") {
                 let ledger = state.ledger
                 LabeledContent("Daily budget") {
                     TextField("characters", value: Binding(
@@ -539,28 +695,32 @@ struct SettingsView: View {
                     ), format: .number)
                     .frame(width: 100)
                 }
-            }
-
-            Section("Maintenance") {
-                Button("Purge Audio Cache") { state.purgeCache() }
+                let spent = ledger.spentToday
+                if spent > 0 {
+                    Text("\(spent.formatted()) characters spent today")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420)
-        .fixedSize(horizontal: false, vertical: true)
-        .onAppear {
-            NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
-            // The Settings window can open behind the menu bar panel;
-            // bring it to front once it exists.
-            DispatchQueue.main.async {
-                NSApp.windows
-                    .first { $0.identifier?.rawValue.contains("Settings") == true || $0.title.contains("Settings") }?
-                    .makeKeyAndOrderFront(nil)
-            }
+    }
+
+    private func saveAPIKey() {
+        let trimmed = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard KeychainStore.saveAPIKey(trimmed) else {
+            apiKeySavedFlash = false
+            apiKeySaveError = "Keychain rejected the update. Unlock your login keychain and try again."
+            return
         }
-        .onDisappear {
-            NSApp.setActivationPolicy(.accessory)
+        apiKeyDraft = ""
+        apiKeySavedFlash = true
+        apiKeySaveError = nil
+        state.refreshCredits()
+        state.refreshVoices(force: true)
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            apiKeySavedFlash = false
         }
     }
 }

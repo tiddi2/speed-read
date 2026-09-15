@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Reading is now per language, and only Norwegian or English. Each language has
+  its own hotkey, voice and model, and the language is pinned on the ElevenLabs
+  request (`language_code`) rather than detected from the text, so a read never
+  drifts into a third language. Norwegian is cloud-only — Kokoro has no
+  Norwegian voice, so it is never used as a fallback for it and a Norwegian read
+  in Local-Only mode is refused instead of spoken with an English voice. Only
+  Flash v2.5 and Turbo v2.5 accept `language_code`; picking Multilingual v2 or
+  v3 for a language now shows a warning that the language cannot be locked. The
+  audio cache key includes the pinned language, so the same sentence cached as
+  English is never replayed for a Norwegian read.
+- Every global hotkey is configurable in Settings → Shortcuts: speak selection
+  and speak clipboard per language, pause/resume, stop, previous/next sentence,
+  ±5 s seek, restart, and speed up/down. Defaults: ⌥A English, ⌥⇧A Norwegian,
+  and ⌥⇧, / ⌥⇧. / ⌥⇧/ for previous sentence / pause / next sentence. The rest
+  are unset, so sr claims less of the global key space. Replaces the single
+  ⌥⇧/ speak hotkey.
+- Added sentence-level seeking: previous/next sentence jump on the real chunk
+  boundaries, and "previous" restarts the current sentence unless pressed right
+  at its start. The menu panel gained buttons for both.
+- Moved configuration out of the menu bar panel into the Settings window (⌘,),
+  now tabbed: General (backend, offline voice, permissions), Voices (per-language
+  voice and model), Shortcuts, Privacy, and Cost (API key, credits, budget). The
+  panel keeps transport, progress, speed, and Speak Clipboard — one button per
+  language, since sr never guesses what language a clipboard holds.
+- CLI: `--lang en|no` selects the language profile; it defaults to English
+  rather than letting the model detect the language.
+
 - Fixed jarring pauses between sentences on the local voice at faster playback
   rates: Kokoro bakes ~0.4 s leading / ~0.6 s trailing silence into every
   generated segment, so each boundary carried ~1 s of dead air on top of the

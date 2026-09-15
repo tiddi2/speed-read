@@ -18,6 +18,36 @@ public struct ElevenLabsProvider: TTSProvider {
         ("v3 — most expressive", "eleven_v3"),
     ]
 
+    /// Models that accept `language_code` and will therefore stay in one
+    /// language instead of detecting it from the text. The v2.5 pair are also
+    /// the only models that speak Norwegian at all (added alongside Hungarian
+    /// and Vietnamese in the 32-language v2.5 release); Multilingual v2 covers
+    /// 29 languages without it, and v3 rejects the parameter outright.
+    ///
+    /// Sending `language_code` to any other model is an API error, so the
+    /// language is dropped rather than sent — see `lockedLanguageCode`.
+    public static let languageLockedModelIDs: Set<String> = [
+        "eleven_flash_v2_5",
+        "eleven_turbo_v2_5",
+    ]
+
+    public static func supportsLanguageLock(_ modelID: String) -> Bool {
+        languageLockedModelIDs.contains(modelID)
+    }
+
+    /// The language code that will actually be sent for `language` on
+    /// `modelID` — nil when the model cannot be pinned to a language.
+    ///
+    /// Callers use this for both the request and the cache key, so cached
+    /// audio is never replayed as if it had been language-locked.
+    public static func lockedLanguageCode(
+        for language: SpeechLanguage?,
+        modelID: String
+    ) -> String? {
+        guard let language, supportsLanguageLock(modelID) else { return nil }
+        return language.elevenLabsLanguageCode
+    }
+
     /// Bootstrap fallback only — the picker fetches the account's real voice
     /// list (F-10). The reference repo's wider preset list included library
     /// voices that 402 on free plans ("paid_plan_required"); these three are
@@ -29,9 +59,14 @@ public struct ElevenLabsProvider: TTSProvider {
     ]
 
     public var modelID: String
+    /// ISO 639-1 language to pin this provider to, already filtered down to
+    /// what `modelID` accepts (nil = let the model detect the language).
+    public let languageCode: String?
 
-    public init(modelID: String = ElevenLabsProvider.defaultModelID) {
+    public init(modelID: String = ElevenLabsProvider.defaultModelID,
+                language: SpeechLanguage? = nil) {
         self.modelID = modelID
+        self.languageCode = Self.lockedLanguageCode(for: language, modelID: modelID)
     }
 
     public func voices() async throws -> [Voice] {
@@ -92,11 +127,15 @@ public struct ElevenLabsProvider: TTSProvider {
             }
             let text: String
             let model_id: String
+            /// Omitted entirely when nil — models outside
+            /// `languageLockedModelIDs` reject the field.
+            let language_code: String?
             let voice_settings: Settings
         }
         request.httpBody = try JSONEncoder().encode(Body(
             text: text,
             model_id: modelID,
+            language_code: languageCode,
             voice_settings: .init(
                 stability: settings.stability,
                 similarity_boost: settings.similarityBoost,
@@ -137,6 +176,8 @@ public struct ElevenLabsProvider: TTSProvider {
                 "status": String(http.statusCode),
                 "chars": String(text.count),
                 "latency_ms": String(latencyMS),
+                "model": modelID,
+                "lang": languageCode ?? "auto",
             ])
             throw TTSError.http(status: http.statusCode, body: body)
         }
@@ -160,6 +201,7 @@ public struct ElevenLabsProvider: TTSProvider {
             "bytes": String(data.count),
             "latency_ms": String(latencyMS),
             "model": modelID,
+            "lang": languageCode ?? "auto",
             "history_id_present": historyID == nil ? "0" : "1",
         ])
         return SynthesisResult(audio: data, remoteHistoryItemID: historyID, billedCharacters: billed)

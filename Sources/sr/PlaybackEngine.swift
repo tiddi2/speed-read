@@ -325,6 +325,42 @@ final class PlaybackEngine: ObservableObject {
         SRLog.event("playback.seek", ["delta_s": String(Int(deltaSeconds))])
     }
 
+    /// Jump whole sentences: -1 = previous, +1 = next. Clamped to the
+    /// sentences already decoded (forward) and to the first one (backward).
+    ///
+    /// "Previous" behaves like a music player's previous-track button: past
+    /// `sentenceRestartGrace` into a sentence it restarts that sentence (the
+    /// common "say that again"), and only jumps to the one before when pressed
+    /// near its start.
+    func seekSentence(by delta: Int) {
+        guard isActive, !segments.isEmpty, delta != 0 else { return }
+        let frame = currentFrame
+        guard let index = segmentIndex(containing: frame) else { return }
+
+        var target = index + delta
+        if delta < 0 {
+            let elapsed = Double(frame - sentenceStartFrame(index)) / Self.sampleRate
+            // Re-listening to the current sentence consumes the first step.
+            if elapsed >= Self.sentenceRestartGrace { target += 1 }
+        }
+        let clamped = min(max(target, 0), segments.count - 1)
+        SRLog.event("playback.seek_sentence", [
+            "delta": String(delta),
+            "to": String(clamped),
+        ])
+        rescheduleContent(from: sentenceStartFrame(clamped))
+    }
+
+    /// Seconds into a sentence after which "previous" restarts it instead of
+    /// stepping back one.
+    private static let sentenceRestartGrace: Double = 1.5
+
+    /// First audible frame of sentence `index` — past the inter-sentence pause
+    /// baked into the segment, so a jump starts on speech, not on silence.
+    private func sentenceStartFrame(_ index: Int) -> AVAudioFramePosition {
+        segmentStartFrames[index] + AVAudioFramePosition(segments[index].pauseFrames)
+    }
+
     /// Restart from the top.
     func restart() {
         guard isActive else { return }
