@@ -92,6 +92,21 @@ private struct GeneralSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
+            Section("Reader overlay") {
+                Toggle("Show the reader while sr is speaking",
+                       isOn: $state.readerOverlayEnabled)
+                Toggle("Previous sentence", isOn: $state.readerShowsPreviousSentence)
+                    .disabled(!state.readerOverlayEnabled)
+                Toggle("Current sentence, with the spoken word highlighted",
+                       isOn: $state.readerShowsCurrentSentence)
+                    .disabled(!state.readerOverlayEnabled)
+                Toggle("Next sentence", isOn: $state.readerShowsNextSentence)
+                    .disabled(!state.readerOverlayEnabled)
+                Text("A borderless window in the top-right of the screen the selection is on — drag it anywhere and sr remembers. Sentences are shown whole and the window grows to fit them, so nothing is cut off. It also shows the speed (change it with the Faster / Slower hotkeys) and which language is being read; neither is editable mid-read.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Reset Overlay Position") { state.resetReaderOverlayPosition() }
+            }
+
             Section("Appearance") {
                 Toggle("Show sr in the Dock", isOn: $state.showInDock)
                 Text("sr lives in the menu bar either way. With this on it also keeps a Dock icon while it runs; clicking that icon opens Settings.")

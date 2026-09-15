@@ -291,7 +291,8 @@ struct MenuView: View {
 
 /// Circular transport control with a hover ring and a full-circle hit area.
 /// `prominent` renders as the accent-filled hero (play/pause).
-private struct TransportButton: View {
+/// Shared with the reader overlay, so the two transports feel like one control.
+struct TransportButton: View {
     let systemName: String
     var size: CGFloat = 36
     var iconSize: CGFloat = 15
