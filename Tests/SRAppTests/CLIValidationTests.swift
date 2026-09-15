@@ -16,6 +16,9 @@ import Testing
         ["--speak", "article.md", "--lang", "de"],
         ["--speak", "article.md", "--lang", "en", "--lang", "no"],
         ["--install-kokoro", "--lang", "en"],
+        ["--install-norwegian", "--local"],
+        ["--install-norwegian", "--lang", "no"],
+        ["--install-kokoro", "--install-norwegian"],
         ["--lang", "no"],
     ])
     func rejectsAmbiguousOrUnknownArguments(_ args: [String]) {
@@ -24,6 +27,20 @@ import Testing
             return
         }
         #expect(error != nil)
+    }
+
+    /// Each offline model is its own download, so each has its own command
+    /// and neither may be confused for the other.
+    @Test func installCommandsAreDistinct() {
+        guard case .installKokoro = HeadlessCLI.Mode(arguments: ["sr", "--install-kokoro"]) else {
+            Issue.record("--install-kokoro did not select the English model")
+            return
+        }
+        guard case .installNorwegian = HeadlessCLI.Mode(
+            arguments: ["sr", "--install-norwegian"]) else {
+            Issue.record("--install-norwegian did not select the Norwegian model")
+            return
+        }
     }
 
     @Test(arguments: [["--speak", "--help"], ["--help", "--speak"], ["--unknown", "-h"]])

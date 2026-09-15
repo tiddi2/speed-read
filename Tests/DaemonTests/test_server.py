@@ -1,3 +1,4 @@
+import contextlib
 import importlib.util
 import pathlib
 import unittest
@@ -150,3 +151,95 @@ class GenerationFailureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EngineRoutingTests(unittest.TestCase):
+    """The daemon serves two engines over one socket; each request says which."""
+
+    def _handle(self, request_obj, **patches):
+        import json
+        import tempfile
+        from unittest.mock import patch, Mock
+
+        conn = Mock()
+        request = json.dumps(request_obj).encode()
+        with tempfile.NamedTemporaryFile() as audio:
+            audio.write(b"audio")
+            audio.flush()
+            context = {
+                "AUTH_TOKEN": "test",
+                "_read_request_line": lambda _conn: request,
+                "_client_gone": lambda _conn: False,
+                "generate_audio": lambda *a, **k: audio.name,
+                "_release_model_scratch": lambda: None,
+                "log": lambda *a: None,
+            }
+            context.update(patches)
+            with contextlib.ExitStack() as stack:
+                for name, value in context.items():
+                    stack.enter_context(patch.object(server, name, value))
+                server.handle_client(conn)
+        return json.loads(conn.sendall.call_args.args[0])
+
+    def test_f5_response_uses_its_own_output_version(self):
+        response = self._handle(
+            {"token": "test", "text": "Hei.", "voice": "min-stemme",
+             "lang_code": "n", "engine": "f5"},
+            f5_configured=lambda: True)
+        self.assertEqual(response["status"], "ok")
+        self.assertEqual(response["output_version"], "f5-tts-no-t1")
+
+    def test_unknown_engine_is_refused(self):
+        response = self._handle(
+            {"token": "test", "text": "x", "voice": "bf_lily", "engine": "espeak"})
+        self.assertEqual(response["status"], "error")
+        self.assertEqual(response["message"], "invalid request fields")
+
+    def test_f5_refused_when_not_installed(self):
+        response = self._handle(
+            {"token": "test", "text": "Hei.", "voice": "min-stemme", "engine": "f5"},
+            f5_configured=lambda: False)
+        self.assertEqual(response["status"], "error")
+        self.assertEqual(response["message"], "engine not installed")
+
+    def test_f5_voice_id_cannot_escape_the_voices_directory(self):
+        for voice in ("../../etc", "has/slash", "Upper", "has.dot", ""):
+            response = self._handle(
+                {"token": "test", "text": "Hei.", "voice": voice, "engine": "f5"},
+                f5_configured=lambda: True)
+            self.assertEqual(response["message"], "invalid request fields", voice)
+
+    def test_kokoro_still_rejects_the_hyphen_f5_allows(self):
+        response = self._handle(
+            {"token": "test", "text": "x", "voice": "bf-lily"})
+        self.assertEqual(response["message"], "invalid request fields")
+
+
+class F5ArchTests(unittest.TestCase):
+    """SR_F5_ARCH decides how the checkpoint is interpreted."""
+
+    def _arch(self, json_text):
+        from unittest.mock import patch
+        with patch.object(server, "F5_ARCH_JSON", json_text), \
+                patch.object(server, "log", lambda *a: None):
+            return server.f5_arch()
+
+    def test_defaults_to_the_base_architecture(self):
+        arch = self._arch("")
+        self.assertEqual(arch["pe_attn_head"], 1)
+        self.assertFalse(arch["text_mask_padding"])
+
+    def test_explicit_null_pe_attn_head_means_every_head(self):
+        # A missing key would leave the default of 1 in place, so the Swift
+        # side writes null explicitly; this is the other half of that contract.
+        arch = self._arch('{"pe_attn_head": null, "text_mask_padding": true}')
+        self.assertIsNone(arch["pe_attn_head"])
+        self.assertTrue(arch["text_mask_padding"])
+
+    def test_unknown_keys_are_ignored(self):
+        arch = self._arch('{"dim": 512, "not_a_real_knob": 3}')
+        self.assertEqual(arch["dim"], 512)
+        self.assertNotIn("not_a_real_knob", arch)
+
+    def test_unparseable_json_falls_back_to_defaults(self):
+        self.assertEqual(self._arch("{not json"), server.F5_DEFAULT_ARCH)

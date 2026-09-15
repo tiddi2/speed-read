@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Persistent Kokoro TTS daemon for sr (P-9).
+"""Persistent local TTS daemon for sr (P-9).
 
-Adapted from Speak11's tts_server.py (public domain). Keeps the Kokoro
-model loaded in memory and serves TTS requests over a Unix domain socket.
+Adapted from Speak11's tts_server.py (public domain). Keeps the local
+model(s) loaded in memory and serves TTS requests over a Unix domain socket.
+
+Two engines share this daemon, one venv and one socket:
+  kokoro — Kokoro-82M via mlx-audio. English. Fixed set of baked-in voices.
+  f5     — an F5-TTS checkpoint via f5-tts-mlx. Norwegian. Zero-shot, so a
+           "voice" is a short reference recording plus its transcript, and
+           each one lives in its own directory under SR_F5_VOICES_PATH.
+Each engine is optional: the daemon starts with whichever ones the installer
+configured, and refuses requests for the others.
 
 Security model (P-9):
   - Unix socket only, mode 0600, under ~/Library/Application Support/sr/kokoro/.
@@ -13,9 +21,11 @@ Security model (P-9):
 
 Protocol (one JSON object per line, UTF-8):
   request:  {"token": "<hex>", "text": "...", "voice": "bf_lily",
-             "speed": "1.0", "lang_code": "b"}
+             "speed": "1.0", "lang_code": "b", "engine": "kokoro"}
   response: {"status": "ok", "audio_file": "/abs/path.wav"}
         or  {"status": "error", "message": "..."}
+  "engine" is optional and defaults to "kokoro", so a client from before the
+  Norwegian voice existed still speaks the same protocol.
   The CLIENT owns the returned WAV file and its parent temp directory and
   must delete both after reading. Orphaned temp dirs are swept at daemon
   startup.
@@ -49,12 +59,38 @@ LOG_FILE = os.path.join(LOG_DIR, "kokoro.log")
 
 MODEL_ID = "mlx-community/Kokoro-82M-bf16"
 # Must match the client cache namespace: old processes may outlive an update.
-OUTPUT_VERSION = "kokoro-82M-t2"
+# One entry per engine, because a stale daemon serving one engine's audio
+# under the other's namespace would poison the cache.
+OUTPUT_VERSIONS = {"kokoro": "kokoro-82M-t2", "f5": "f5-tts-no-t1"}
+ENGINES = tuple(OUTPUT_VERSIONS)
 
 # Verified local snapshot (P-12): the supervisor passes the installer's
 # hash-verified snapshot directory so the daemon runs exactly the bytes
 # that were checked — never whatever the HF cache resolves MODEL_ID to.
 MODEL_PATH = os.environ.get("SR_MODEL_PATH", "")
+
+# ── F5 (Norwegian) ───────────────────────────────────────────────────
+# Same idea: the supervisor passes verified directories, never repo ids.
+#   SR_F5_MODEL_PATH    dir with model_v1.safetensors + vocab.txt
+#   SR_F5_VOCODER_PATH  dir with the Vocos mel vocoder
+#   SR_F5_VOICES_PATH   dir of <voice>/ref.wav + <voice>/ref.txt
+#   SR_F5_ARCH          JSON architecture knobs written by the installer
+F5_MODEL_PATH = os.environ.get("SR_F5_MODEL_PATH", "")
+F5_VOCODER_PATH = os.environ.get("SR_F5_VOCODER_PATH", "")
+F5_VOICES_PATH = os.environ.get("SR_F5_VOICES_PATH", "")
+F5_ARCH_JSON = os.environ.get("SR_F5_ARCH", "")
+
+F5_SAMPLE_RATE = 24_000
+F5_HOP_LENGTH = 256
+F5_FRAMES_PER_SEC = F5_SAMPLE_RATE / F5_HOP_LENGTH
+# f5-tts-mlx normalizes the reference clip to this RMS before conditioning.
+F5_TARGET_RMS = 0.1
+# Sampling steps through the flow-matching ODE. 8 is upstream's default and
+# the knee of the quality/latency curve on Apple Silicon.
+F5_STEPS = 8
+# f5-tts-mlx caps a generation at 4096 frames (~43 s). Stay under it with
+# room for the reference clip, and split longer text rather than truncating.
+F5_MAX_FRAMES = 3600
 
 # Requests are single sentences (the client chunks upstream); 1 MB is
 # orders of magnitude above any legitimate request line.
@@ -93,6 +129,8 @@ def log(msg):
 # ── Globals ──────────────────────────────────────────────────────────
 
 model = None
+f5_model = None
+f5_load_lock = threading.Lock()
 last_request_time = time.time()
 server_socket = None
 shutdown_event = threading.Event()
@@ -101,6 +139,15 @@ generation_lock = threading.Lock()
 client_slots = threading.BoundedSemaphore(16)
 activity_lock = threading.Lock()
 active_clients = 0
+
+
+def kokoro_configured():
+    return bool(MODEL_PATH) or not managed_mode
+
+
+def f5_configured():
+    return bool(F5_MODEL_PATH and F5_VOCODER_PATH and F5_VOICES_PATH)
+
 
 # ── Model ────────────────────────────────────────────────────────────
 
@@ -218,7 +265,8 @@ def _trim_edge_silence(audio, sample_rate):
     return audio[start:end]
 
 
-def generate_audio(text, voice, speed, lang_code, cancel_check=None):
+def generate_audio(text, voice, speed, lang_code, cancel_check=None,
+                   engine="kokoro"):
     """Generate a WAV file from text. Returns the file path.
 
     The caller's client owns the file and its parent dir (deletes after
@@ -232,7 +280,10 @@ def generate_audio(text, voice, speed, lang_code, cancel_check=None):
     out_path = os.path.join(tmp_dir, "out.wav")
 
     try:
-        pairs = _generate_segments(text, voice, speed, lang_code, cancel_check)
+        if engine == "f5":
+            pairs = _f5_generate_segments(text, voice, cancel_check)
+        else:
+            pairs = _generate_segments(text, voice, speed, lang_code, cancel_check)
         segments = [_trim_edge_silence(audio, rate) for audio, rate in pairs]
         sample_rate = pairs[-1][1] if pairs else None
 
@@ -253,6 +304,328 @@ def generate_audio(text, voice, speed, lang_code, cancel_check=None):
 
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
+
+
+# ── F5 (Norwegian) ───────────────────────────────────────────────────
+
+# F5-TTS Base ("v0") and F5-TTS v1 Base have identical tensor shapes and
+# differ only in how text padding is masked and where rotary embeddings are
+# applied, so a checkpoint cannot say which it is. The installer records the
+# answer (from a config in the repo, or the shipped default) and passes it
+# here; getting it wrong produces babble rather than an error, which is why
+# it is switchable from Settings.
+F5_DEFAULT_ARCH = {
+    "dim": 1024,
+    "depth": 22,
+    "heads": 16,
+    "ff_mult": 2,
+    "text_dim": 512,
+    "conv_layers": 4,
+    "text_mask_padding": False,
+    "pe_attn_head": 1,
+}
+
+_f5_attention_patched = False
+_f5_reference_cache = {}
+
+
+def f5_arch():
+    arch = dict(F5_DEFAULT_ARCH)
+    if F5_ARCH_JSON:
+        try:
+            supplied = json.loads(F5_ARCH_JSON)
+        except ValueError:
+            log("f5: ignoring unparseable SR_F5_ARCH")
+            return arch
+        if isinstance(supplied, dict):
+            arch.update({k: v for k, v in supplied.items() if k in F5_DEFAULT_ARCH})
+    return arch
+
+
+def _patch_attention_for_pe_head(pe_attn_head):
+    """Apply rotary embeddings to the first `pe_attn_head` heads only.
+
+    f5-tts-mlx implements F5-TTS v1, which rotates every head. The original
+    F5TTS_Base rotates only the first (`pe_attn_head: 1` upstream), and a
+    checkpoint trained that way is unintelligible when every head is
+    rotated. The projections, mask and output path are upstream's; only the
+    rope slice differs.
+    """
+    global _f5_attention_patched
+    if _f5_attention_patched:
+        return
+
+    import mlx.core as mx
+    from f5_tts_mlx.dit import Attention
+    from f5_tts_mlx.rope import apply_rotary_pos_emb
+
+    upstream = Attention.__call__
+
+    def patched(self, x, mask=None, rope=None):
+        if rope is None:
+            return upstream(self, x, mask=mask, rope=rope)
+
+        batch, seq_len, _ = x.shape
+        heads = self.heads
+
+        def split(projection):
+            return projection.reshape(batch, seq_len, heads, -1).transpose(0, 2, 1, 3)
+
+        query, key, value = split(self.to_q(x)), split(self.to_k(x)), split(self.to_v(x))
+
+        freqs, xpos_scale = rope
+        q_scale, k_scale = (
+            (xpos_scale, xpos_scale**-1.0) if xpos_scale is not None else (1.0, 1.0)
+        )
+        count = min(pe_attn_head, heads)
+        query = mx.concatenate(
+            [apply_rotary_pos_emb(query[:, :count], freqs, q_scale), query[:, count:]],
+            axis=1)
+        key = mx.concatenate(
+            [apply_rotary_pos_emb(key[:, :count], freqs, k_scale), key[:, count:]],
+            axis=1)
+
+        attn_mask = None
+        if mask is not None:
+            attn_mask = mask[:, None, None, :].expand(batch, heads, 1, seq_len)
+
+        out = mx.fast.scaled_dot_product_attention(
+            q=query, k=key, v=value, scale=self._scale_factor, mask=attn_mask)
+        out = out.transpose(0, 2, 1, 3).reshape(batch, seq_len, -1).astype(query.dtype)
+        out = self.to_out(out)
+        if attn_mask is not None:
+            out = out * mask[:, :, None]
+        return out
+
+    Attention.__call__ = patched
+    _f5_attention_patched = True
+    log(f"f5: rotary embeddings limited to {pe_attn_head} head(s)")
+
+
+def _f5_convert_weights(weights):
+    """Rename an F5-TTS checkpoint's tensors onto the MLX module tree.
+
+    Same mapping f5-tts-mlx applies in `F5TTS.from_pretrained`, kept here
+    because sr builds the model itself (local paths, a local vocoder and a
+    selectable architecture, none of which that entry point offers).
+    """
+    converted = {}
+    for key, value in weights.items():
+        key = key.replace("ema_model.", "")
+        if len(key) < 1 or "mel_spec." in key or key in ("initted", "step"):
+            continue
+        elif ".to_out" in key:
+            key = key.replace(".to_out", ".to_out.layers")
+        elif ".text_blocks" in key:
+            key = key.replace(".text_blocks", ".text_blocks.layers")
+        elif ".ff.ff.0.0" in key:
+            key = key.replace(".ff.ff.0.0", ".ff.ff.layers.0.layers.0")
+        elif ".ff.ff.2" in key:
+            key = key.replace(".ff.ff.2", ".ff.ff.layers.2")
+        elif ".time_mlp" in key:
+            key = key.replace(".time_mlp", ".time_mlp.layers")
+        elif ".conv1d" in key:
+            key = key.replace(".conv1d", ".conv1d.layers")
+
+        if ".dwconv.weight" in key:
+            value = value.swapaxes(1, 2)
+        elif ".conv1d.layers.0.weight" in key:
+            value = value.swapaxes(1, 2)
+        elif ".conv1d.layers.2.weight" in key:
+            value = value.swapaxes(1, 2)
+
+        converted[key] = value
+    return converted
+
+
+def load_f5_model():
+    """Build the F5 model on first Norwegian request (~1.3 GB of weights).
+
+    Lazy rather than eager so a user who installed only the English voice
+    never pays for this, and so daemon startup stays inside the supervisor's
+    socket deadline when both engines are installed.
+    """
+    global f5_model
+    if f5_model is not None:
+        return f5_model
+
+    with f5_load_lock:
+        if f5_model is not None:
+            return f5_model
+        if not f5_configured():
+            raise RuntimeError("f5 engine not installed")
+
+        import mlx.core as mx
+        from vocos_mlx import Vocos
+
+        arch = f5_arch()
+        pe_attn_head = arch.get("pe_attn_head")
+        if pe_attn_head:
+            _patch_attention_for_pe_head(int(pe_attn_head))
+
+        from f5_tts_mlx.cfm import F5TTS
+        from f5_tts_mlx.dit import DiT
+
+        log("f5: loading weights")
+        weights_path = os.path.join(F5_MODEL_PATH, "model_v1.safetensors")
+        with open(os.path.join(F5_MODEL_PATH, "vocab.txt"), encoding="utf-8") as f:
+            entries = f.read().split("\n")
+        vocab = {char: index for index, char in enumerate(entries)}
+        if not vocab:
+            raise RuntimeError("f5 vocabulary is empty")
+
+        weights = _f5_convert_weights(mx.load(weights_path, format="safetensors"))
+
+        # Size the text embedding from the checkpoint rather than from the
+        # vocabulary file: whether vocab.txt ends in a newline changes the
+        # count by one, and a one-off there is a shape mismatch at load.
+        embedding = weights.get("transformer.text_embed.text_embed.weight")
+        text_num_embeds = (
+            embedding.shape[0] - 1 if embedding is not None else len(vocab) - 1
+        )
+
+        vocos = Vocos.from_pretrained(F5_VOCODER_PATH)
+        f5 = F5TTS(
+            transformer=DiT(
+                dim=int(arch["dim"]),
+                depth=int(arch["depth"]),
+                heads=int(arch["heads"]),
+                ff_mult=int(arch["ff_mult"]),
+                text_dim=int(arch["text_dim"]),
+                conv_layers=int(arch["conv_layers"]),
+                text_mask_padding=bool(arch["text_mask_padding"]),
+                text_num_embeds=text_num_embeds,
+            ),
+            vocab_char_map=vocab,
+            vocoder=vocos.decode,
+        )
+        f5.load_weights(list(weights.items()))
+        mx.eval(f5.parameters())
+        f5_model = f5
+        log(f"f5: model loaded (vocab={len(vocab)} embeds={text_num_embeds})")
+        return f5_model
+
+
+def _f5_reference(voice):
+    """Load a reference clip and its transcript, cached by mtime.
+
+    Returns (mx.array mono 24 kHz, transcript, rms_scale). The clip is
+    written by sr at exactly 24 kHz mono, so anything else here means the
+    voice directory was tampered with and is refused rather than resampled.
+    """
+    import mlx.core as mx
+    import numpy as np
+    import soundfile as sf
+
+    directory = os.path.join(F5_VOICES_PATH, voice)
+    audio_path = os.path.join(directory, "ref.wav")
+    text_path = os.path.join(directory, "ref.txt")
+    # Trust boundary: the voice id is already validated as a bare name, but
+    # resolve the files too — a symlink planted in the voices tree must not
+    # make the daemon read somewhere else on disk.
+    root = os.path.realpath(F5_VOICES_PATH) + os.sep
+    for path in (audio_path, text_path):
+        if not os.path.realpath(path).startswith(root):
+            raise RuntimeError("voice files escape the voices root")
+    if not (os.path.isfile(audio_path) and os.path.isfile(text_path)):
+        raise RuntimeError("voice is missing its reference recording")
+
+    stamp = (os.path.getmtime(audio_path), os.path.getmtime(text_path))
+    cached = _f5_reference_cache.get(voice)
+    if cached and cached[0] == stamp:
+        return cached[1]
+
+    audio, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
+    if sample_rate != F5_SAMPLE_RATE:
+        raise RuntimeError("reference recording is not 24 kHz")
+    audio = audio.mean(axis=1) if audio.shape[1] > 1 else audio[:, 0]
+    if audio.size < F5_SAMPLE_RATE // 2:
+        raise RuntimeError("reference recording is too short")
+
+    with open(text_path, encoding="utf-8") as f:
+        transcript = f.read().strip()
+    if not transcript:
+        raise RuntimeError("reference recording has no transcript")
+
+    # Upstream conditions on a clip normalized to TARGET_RMS and scales the
+    # result back, so a quiet reference does not make every read loud.
+    rms = float(np.sqrt(np.mean(np.square(audio)))) or 1.0
+    scale = 1.0
+    if rms < F5_TARGET_RMS:
+        audio = audio * (F5_TARGET_RMS / rms)
+        scale = rms / F5_TARGET_RMS
+
+    loaded = (mx.array(audio), transcript, scale)
+    _f5_reference_cache[voice] = (stamp, loaded)
+    return loaded
+
+
+def _f5_estimated_frames(reference_frames, ref_text, gen_text):
+    """Upstream's byte-length heuristic for how long the output should be."""
+    ref_length = max(len(ref_text.encode("utf-8")), 1)
+    gen_length = len(gen_text.encode("utf-8"))
+    return reference_frames + int(reference_frames / ref_length * gen_length)
+
+
+def _f5_generate_segments(text, voice, cancel_check, depth=0):
+    """Yield (audio, sample_rate) for `text`, splitting when it is too long.
+
+    A single F5 generation is capped at F5_MAX_FRAMES; sr chunks by sentence
+    upstream, but one sentence of minified text or unpunctuated OCR can still
+    exceed it. Splitting at a word boundary keeps every word spoken instead of
+    truncating the tail.
+    """
+    import numpy as np
+
+    f5 = load_f5_model()
+    reference, ref_text, rms_scale = _f5_reference(voice)
+    reference_frames = reference.shape[0] // F5_HOP_LENGTH
+    frames = _f5_estimated_frames(reference_frames, ref_text, text)
+
+    if frames > F5_MAX_FRAMES and depth < 6 and len(text) >= 24:
+        middle = len(text) // 2
+        split_at = text.rfind(" ", 0, middle)
+        if split_at <= 0:
+            split_at = text.find(" ", middle)
+        if split_at > 0:
+            log(f"f5: splitting long text_len={len(text)} at {split_at}")
+            return (
+                _f5_generate_segments(
+                    text[:split_at].strip(), voice, cancel_check, depth + 1)
+                + _f5_generate_segments(
+                    text[split_at:].strip(), voice, cancel_check, depth + 1)
+            )
+
+    if cancel_check and cancel_check():
+        raise CancelledError("client disconnected")
+
+    import mlx.core as mx
+    from f5_tts_mlx.utils import convert_char_to_pinyin
+
+    # Speed is always 1.0 — sr applies playback rate client-side (F-8), so
+    # cached audio stays rate-agnostic.
+    conditioned = convert_char_to_pinyin([ref_text + " " + text])
+    wave, _ = f5.sample(
+        mx.expand_dims(reference, axis=0),
+        text=conditioned,
+        duration=min(frames, F5_MAX_FRAMES),
+        steps=F5_STEPS,
+        method="rk4",
+        cfg_strength=2.0,
+        sway_sampling_coef=-1.0,
+        speed=1.0,
+    )
+    # The model continues the reference clip; drop the part we fed it.
+    wave = wave[reference.shape[0]:]
+    mx.eval(wave)
+
+    audio = np.array(wave, copy=True).astype(np.float32)
+    if rms_scale != 1.0:
+        audio = audio * rms_scale
+    del wave
+    if audio.size == 0:
+        raise RuntimeError("model produced no audio")
+    return [(audio, F5_SAMPLE_RATE)]
 
 
 # ── Client handler ───────────────────────────────────────────────────
@@ -334,14 +707,26 @@ def handle_client(conn):
         voice = request.get("voice", "bf_lily")
         speed_raw = request.get("speed", "1.0")
         lang_code = request.get("lang_code", "b")
+        # Absent means kokoro: a client from before the Norwegian voice
+        # existed omits the field entirely.
+        engine = request.get("engine", "kokoro")
         import math
         import re
+        # F5 voice ids are directory names sr generates, so they may carry a
+        # hyphen; Kokoro's are the model's own baked-in names. Both patterns
+        # exclude "." and "/", which is what keeps a voice id a bare name.
+        voice_pattern = r"[a-z0-9_-]{1,64}" if engine == "f5" else r"[a-z0-9_]{1,32}"
         if not isinstance(text, str) or not isinstance(voice, str) \
                 or not isinstance(lang_code, str) \
-                or not re.fullmatch(r"[a-z0-9_]{1,32}", voice) \
+                or not isinstance(engine, str) or engine not in ENGINES \
+                or not re.fullmatch(voice_pattern, voice) \
                 or not re.fullmatch(r"[a-z]", lang_code):
             log("request rejected: invalid fields")
             send({"status": "error", "message": "invalid request fields"})
+            return
+        if engine == "f5" and not f5_configured():
+            log("request rejected: f5 engine not installed")
+            send({"status": "error", "message": "engine not installed"})
             return
         try:
             speed = float(speed_raw)
@@ -352,7 +737,8 @@ def handle_client(conn):
             send({"status": "error", "message": "invalid speed"})
             return
 
-        log(f"request: text_len={len(text)} voice={voice} speed={speed} lang={lang_code}")
+        log(f"request: engine={engine} text_len={len(text)} voice={voice} "
+            f"speed={speed} lang={lang_code}")
 
         if _client_gone(conn):
             raise CancelledError("client disconnected before generation")
@@ -367,6 +753,7 @@ def handle_client(conn):
                 audio_file = generate_audio(
                     text, voice, speed, lang_code,
                     cancel_check=lambda: _client_gone(conn),
+                    engine=engine,
                 )
             finally:
                 _release_model_scratch()
@@ -374,7 +761,8 @@ def handle_client(conn):
         # Size before send: once the response is out, the client owns the
         # temp dir and may delete it before we could stat it.
         audio_bytes = os.path.getsize(audio_file)
-        send({"status": "ok", "audio_file": audio_file, "output_version": OUTPUT_VERSION})
+        send({"status": "ok", "audio_file": audio_file,
+              "output_version": OUTPUT_VERSIONS[engine]})
         log(f"response: ok bytes={audio_bytes}")
 
     except CancelledError:
@@ -490,6 +878,12 @@ def main():
         log("refusing to start: SR_DAEMON_TOKEN not set")
         sys.exit(2)
 
+    # Before taking the lock or writing a pid: a daemon with no engine to
+    # serve would only leave state behind for the next one to clean up.
+    if not kokoro_configured() and not f5_configured():
+        log("refusing to start: no engine configured")
+        sys.exit(2)
+
     os.makedirs(DATA_DIR, exist_ok=True)
 
     # Exclusive lock — at most one daemon. Held for process lifetime,
@@ -529,9 +923,15 @@ def main():
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    # Load model (slow — the supervisor polls for the socket to appear).
-    load_tts_model()
-    warmup_pipeline()
+    # Load the eager engine (slow — the supervisor polls for the socket to
+    # appear). F5 is loaded on first use instead, so installing only the
+    # Norwegian voice neither delays startup nor pins 1.3 GB that a
+    # cloud-only session would never touch.
+    if kokoro_configured():
+        load_tts_model()
+        warmup_pipeline()
+    else:
+        log("starting without kokoro: f5 engine only")
 
     # Managed daemons need both guarantees: die with the parent, and unload
     # the model after inactivity so a prewarm does not pin Metal/RAM forever.

@@ -4,14 +4,15 @@ import SRCore
 
 /// Headless CLI modes (acceptance testing + Phase 4 CLI seed).
 ///
-///   sr --install-kokoro          install the local voice, print progress
+///   sr --install-kokoro          install the English offline voice
+///   sr --install-norwegian       install the Norwegian offline voice
 ///   sr --speak <file|->          speak a file (or stdin) through the full
 ///                                pipeline: normalize → chunk → synthesize
 ///                                (cache, janitor, fallback) → play
 ///   sr --speak-clipboard         speak the clipboard (honors concealed-
 ///                                content refusal; exit 2 when refused)
 ///
-/// Flags: --local forces the Kokoro route; --lang picks the language profile
+/// Flags: --local forces the offline route; --lang picks the language profile
 /// (voice, model and the language pinned on the request). Like the GUI, the
 /// CLI never detects the language from the text — an unspecified --lang means
 /// English, not "whatever the model thinks".
@@ -19,6 +20,7 @@ import SRCore
 enum HeadlessCLI {
     enum Mode {
         case installKokoro
+        case installNorwegian
         case speak(source: String, language: SpeechLanguage,
                    forceLocal: Bool, overrideCostControls: Bool)
         case speakClipboard(language: SpeechLanguage,
@@ -63,7 +65,8 @@ enum HeadlessCLI {
                     }
                     language = parsed
                     index += 1
-                case "--speak", "--speak-clipboard", "--install-kokoro":
+                case "--speak", "--speak-clipboard",
+                     "--install-kokoro", "--install-norwegian":
                     guard command == nil else {
                         self = .usage(error: "choose exactly one command")
                         return
@@ -84,12 +87,12 @@ enum HeadlessCLI {
                 }
                 index += 1
             }
-            if command == "--install-kokoro" {
+            if command == "--install-kokoro" || command == "--install-norwegian" {
                 guard !forceLocal && !overrideCostControls && language == nil else {
                     self = .usage(error: "speech flags require --speak or --speak-clipboard")
                     return
                 }
-                self = .installKokoro
+                self = command == "--install-kokoro" ? .installKokoro : .installNorwegian
             } else if command == "--speak", let source {
                 self = .speak(source: source, language: language ?? .english,
                               forceLocal: forceLocal,
@@ -105,13 +108,14 @@ enum HeadlessCLI {
     }
 
     private static let usageText = """
-    usage: sr [--speak <file|-> | --speak-clipboard | --install-kokoro] [--lang en|no] [--local] [--override-cost-controls]
+    usage: sr [--speak <file|-> | --speak-clipboard | --install-kokoro | --install-norwegian] [--lang en|no] [--local] [--override-cost-controls]
       --speak <file|->    speak a file (or stdin) through the full pipeline
       --speak-clipboard   speak the clipboard (exit 2 on concealed content)
-      --install-kokoro    install the local voice
+      --install-kokoro    install the English offline voice (Kokoro, ~330 MB)
+      --install-norwegian install the Norwegian offline voice (F5-TTS, ~1.4 GB)
       --lang en|no        language profile to read in (default: en); pins the
                           language on the request instead of detecting it
-      --local             force the local (Kokoro) route
+      --local             force the offline route for this language
       --override-cost-controls
                           allow a cloud read past budget/large-read gates
     Run with no arguments to launch the menu-bar app.
@@ -128,6 +132,8 @@ enum HeadlessCLI {
             return 0
         case .installKokoro:
             return await installKokoro()
+        case .installNorwegian:
+            return await installNorwegian()
         case .speak(let source, let language, let forceLocal, let overrideCostControls):
             guard let text = readText(source) else {
                 FileHandle.standardError.write(Data("cannot read \(source)\n".utf8))
@@ -197,6 +203,56 @@ enum HeadlessCLI {
         }
         print("FAILED: install stream ended unexpectedly")
         return 1
+    }
+
+    /// The Norwegian model, headlessly. Same install the Settings button runs;
+    /// reference recordings are added in the GUI, since picking an audio file
+    /// and typing its transcript is not a command-line shape.
+    private static func installNorwegian() async -> Int32 {
+        guard let source = daemonScriptSource(),
+              let requirementsLock = requirementsLockSource(),
+              let fetcher = f5FetchScriptSource() else {
+            print("local installer resources not found (looked in bundle + ./daemon/)")
+            return 1
+        }
+        if F5Runtime.shared.isInstalled {
+            print("already installed")
+            return 0
+        }
+        if F5Runtime.shared.installer.needsUpdate {
+            print("updating existing Norwegian voice…")
+        }
+        for await progress in F5Runtime.shared.installer.install(
+            daemonSourceURL: source,
+            requirementsLockURL: requirementsLock,
+            fetchSourceURL: fetcher) {
+            switch progress {
+            case .creatingVenv: print("creating Python venv…")
+            case .installingPackages: print("installing pinned f5-tts-mlx…")
+            case .downloading(let stage): print(stage)
+            case .verifying: print("verifying SHA-256…")
+            case .done:
+                let voices = F5Runtime.shared.voices.voices()
+                print(voices.isEmpty
+                      ? "done — add a reference recording in Settings → Voices to use it"
+                      : "done — Norwegian offline voice installed")
+                return 0
+            case .failed(let message):
+                print("FAILED: \(message)")
+                return 1
+            }
+        }
+        print("FAILED: install stream ended unexpectedly")
+        return 1
+    }
+
+    private static func f5FetchScriptSource() -> URL? {
+        if let bundled = Bundle.main.url(forResource: "sr_f5_fetch", withExtension: "py") {
+            return bundled
+        }
+        let dev = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("daemon/sr_f5_fetch.py")
+        return FileManager.default.fileExists(atPath: dev.path) ? dev : nil
     }
 
     private static func daemonScriptSource() -> URL? {
@@ -272,16 +328,20 @@ enum HeadlessCLI {
             languageCode: ElevenLabsProvider.lockedLanguageCode(
                 for: language, modelID: model) ?? "",
             variant: locator?.versionID ?? "")
-        // Same rule as the GUI: a language the local model cannot speak gets
-        // no local route at all, rather than an English voice reading it.
+        // Same rule as the GUI: a language whose offline model is missing —
+        // or, for Norwegian, that has no reference recording yet — gets no
+        // local route at all, rather than another language's voice reading it.
         var local: SynthesisPipeline.Route?
-        if KokoroRuntime.shared.isInstalled,
-           let localVoice = settings.localVoiceID(for: language) {
+        if LocalVoices.isInstalled(for: language),
+           let localVoice = settings.localVoiceID(for: language),
+           LocalVoices.owns(voiceID: localVoice, language: language) {
             local = SynthesisPipeline.Route(
-                provider: KokoroProvider(language: language),
+                provider: LocalVoices.provider(for: language),
                 voiceID: localVoice,
-                modelID: KokoroProvider.cacheModelID,
-                languageCode: language.rawValue)
+                modelID: LocalVoices.cacheModelID(for: language),
+                languageCode: language.rawValue,
+                variant: LocalVoices.cacheVariant(for: language, voiceID: localVoice,
+                                                  settings: settings))
         }
 
         let routePlan = BackendRouting.plan(
@@ -290,9 +350,7 @@ enum HeadlessCLI {
             localAvailable: local != nil,
             hasCloudCredential: KeychainStore.readAPIKey() != nil)
         if routePlan == .localUnavailable {
-            print(language.isSpeakableLocally
-                  ? "local voice not installed"
-                  : "no offline \(language.displayName) voice — this language is cloud-only")
+            print(LocalVoices.unavailableMessage(for: language))
             return 1
         }
         let primary: SynthesisPipeline.Route

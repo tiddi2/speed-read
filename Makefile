@@ -1,5 +1,5 @@
 .PHONY: build test app run install update setup-signing reset-permissions \
-        signing-status quit-sr clean
+        signing-status quit-sr clean pin-f5-model
 
 build:
 	swift build
@@ -49,8 +49,9 @@ install: setup-signing app
 #
 # Neither command can reset your preferences: voices, models, hotkeys, speed,
 # budget and backend mode live in UserDefaults (com.patrickellis.sr), the API
-# key lives in the login Keychain, and the audio cache and local voice live in
-# ~/Library/Application Support/sr. None of those are inside sr.app.
+# key lives in the login Keychain, and the audio cache, the offline models and
+# your Norwegian reference recordings live in ~/Library/Application Support/sr.
+# None of those are inside sr.app.
 update:
 	git pull --ff-only
 	@$(MAKE) --no-print-directory setup-signing
@@ -70,6 +71,12 @@ update:
 # a new app — see README > Development. `make app` runs it too.
 setup-signing:
 	@bash scripts/setup-signing.sh
+
+# Print the Swift pins for the Norwegian model you have installed, so a
+# community fine-tune with no stable revision can be frozen to one commit.
+# See scripts/pin-f5-model.sh.
+pin-f5-model:
+	@bash scripts/pin-f5-model.sh
 
 # Prove the identity works, and say where its key lives.
 signing-status:

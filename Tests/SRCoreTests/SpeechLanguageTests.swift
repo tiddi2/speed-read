@@ -3,9 +3,12 @@ import Testing
 @testable import SRCore
 
 @Suite struct SpeechLanguageTests {
-    @Test func norwegianHasNoLocalVoice() {
-        #expect(SpeechLanguage.english.isSpeakableLocally)
-        #expect(!SpeechLanguage.norwegian.isSpeakableLocally)
+    /// Each language has exactly one offline engine, and Kokoro is not
+    /// Norwegian's — reading Norwegian with an English voice is the
+    /// substitution this whole type exists to prevent.
+    @Test func eachLanguageHasItsOwnOfflineEngine() {
+        #expect(SpeechLanguage.english.localEngine == .kokoro)
+        #expect(SpeechLanguage.norwegian.localEngine == .f5)
         #expect(KokoroProvider.presetVoices(for: .norwegian).isEmpty)
         #expect(!KokoroProvider.presetVoices(for: .english).isEmpty)
     }
@@ -105,13 +108,16 @@ import Testing
         #expect(unlocked.modelID(for: .norwegian) == "eleven_v3")
     }
 
+    /// Asserted as "not that voice" rather than "nil": Norwegian does have an
+    /// offline engine now, so on a machine with a reference recording
+    /// installed the fallback is that recording — never the English voice.
     @Test func localVoiceIsNeverBorrowedFromAnotherLanguage() {
         let settings = store(["localVoiceID": "af_heart"])
         #expect(settings.localVoiceID(for: .english) == "af_heart")
-        #expect(settings.localVoiceID(for: .norwegian) == nil)
+        #expect(settings.localVoiceID(for: .norwegian) != "af_heart")
 
         // A stored value that does not belong to the language is ignored.
         settings.setLocalVoiceID("af_heart", for: .norwegian)
-        #expect(settings.localVoiceID(for: .norwegian) == nil)
+        #expect(settings.localVoiceID(for: .norwegian) != "af_heart")
     }
 }

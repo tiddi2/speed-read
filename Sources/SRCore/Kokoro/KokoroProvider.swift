@@ -102,7 +102,7 @@ public struct KokoroProvider: TTSProvider {
 
         // Daemon protocol: one JSON request line, one JSON response line.
         // Speed is always 1.0 — sr applies rate client-side (F-8).
-        let request = KokoroRequest(
+        let request = LocalTTSRequest(
             token: token,
             text: text,
             voice: voiceID,
@@ -181,12 +181,16 @@ public struct KokoroProvider: TTSProvider {
 
 // MARK: - Wire format
 
-struct KokoroRequest: Codable {
+/// One request line on the daemon socket. `engine` selects Kokoro or F5;
+/// it defaults to Kokoro so the field can be omitted, which is what a
+/// pre-Norwegian client did.
+struct LocalTTSRequest: Codable {
     let token: String
     let text: String
     let voice: String
     let speed: String
     let lang_code: String
+    var engine: String = "kokoro"
 }
 
 enum KokoroWire {
@@ -200,7 +204,7 @@ enum KokoroWire {
         let message: String
     }
 
-    static func encode(_ request: KokoroRequest) throws -> String {
+    static func encode(_ request: LocalTTSRequest) throws -> String {
         let data = try JSONEncoder().encode(request)
         guard let line = String(data: data, encoding: .utf8) else {
             throw WireError(message: "request encoding failed")
@@ -208,7 +212,12 @@ enum KokoroWire {
         return line
     }
 
-    static func decodeResponse(_ line: String) throws -> Response {
+    /// `expected` is the output version this client can use. A daemon
+    /// left over from an older sr answers with a different one, and its
+    /// audio must never reach playback or the cache.
+    static func decodeResponse(
+        _ line: String, expecting expected: String = KokoroProvider.cacheModelID
+    ) throws -> Response {
         struct Raw: Codable {
             let status: String
             let audio_file: String?
@@ -217,7 +226,7 @@ enum KokoroWire {
         }
         let raw = try JSONDecoder().decode(Raw.self, from: Data(line.utf8))
         if raw.status == "ok", let file = raw.audio_file {
-            return raw.output_version == KokoroProvider.cacheModelID
+            return raw.output_version == expected
                 ? .ok(audioFile: file) : .incompatible(audioFile: file)
         }
         return .error(message: raw.message ?? "unknown daemon error")

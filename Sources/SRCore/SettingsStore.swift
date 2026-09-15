@@ -41,6 +41,7 @@ public struct SettingsStore {
         static let readerShowsNextSentence = "readerShowsNextSentence"
         static let readerOverlayOffsetX = "readerOverlayOffsetX"
         static let readerOverlayOffsetY = "readerOverlayOffsetY"
+        static let f5Variant = "f5Variant"
     }
 
     /// Backend modes (F-3): Auto = cloud with local fallback.
@@ -81,18 +82,21 @@ public struct SettingsStore {
         defaults.set(modelID, forKey: Key.modelID(language))
     }
 
-    /// Local (Kokoro) voice for `language`, or nil when the local model has no
-    /// voices for it (Norwegian). A stored voice from another language is
-    /// ignored rather than used.
+    /// Offline voice for `language`, or nil when that language has none to
+    /// offer yet — Kokoro not installed, or no Norwegian reference recording
+    /// added. A stored voice that no longer exists, or that belongs to another
+    /// language, is ignored rather than used.
     public func localVoiceID(for language: SpeechLanguage) -> String? {
         let candidates = [
             defaults.string(forKey: Key.localVoiceID(language)),
             defaults.string(forKey: Key.legacyLocalVoiceID),
         ]
         for candidate in candidates {
-            if let candidate, language.ownsLocalVoice(candidate) { return candidate }
+            if let candidate, LocalVoices.owns(voiceID: candidate, language: language) {
+                return candidate
+            }
         }
-        return KokoroProvider.presetVoices(for: language).first?.id
+        return LocalVoices.defaultVoiceID(for: language)
     }
 
     public func setLocalVoiceID(_ voiceID: String, for language: SpeechLanguage) {
@@ -205,6 +209,28 @@ public struct SettingsStore {
     public func resetReaderOverlayPosition() {
         defaults.removeObject(forKey: Key.readerOverlayOffsetX)
         defaults.removeObject(forKey: Key.readerOverlayOffsetY)
+    }
+
+    // MARK: - Norwegian offline voice
+
+    /// Architecture the F5 checkpoint is loaded with, when the user has
+    /// overridden what the install detected. Nil means "use the detected one".
+    ///
+    /// This exists because the two F5-TTS architectures share every tensor
+    /// shape: loading a checkpoint the wrong way produces babble rather than
+    /// an error, and no amount of inspection can tell them apart. One click
+    /// is a better answer than a reinstall.
+    public var f5Variant: F5Installer.Variant? {
+        get {
+            defaults.string(forKey: Key.f5Variant).flatMap(F5Installer.Variant.init(rawValue:))
+        }
+        nonmutating set {
+            if let newValue {
+                defaults.set(newValue.rawValue, forKey: Key.f5Variant)
+            } else {
+                defaults.removeObject(forKey: Key.f5Variant)
+            }
+        }
     }
 
     private func bool(_ key: String, default fallback: Bool) -> Bool {

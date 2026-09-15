@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- **Norwegian reads offline.** Kokoro has no Norwegian voice, so until now a
+  Norwegian selection always went to ElevenLabs and was refused outright in
+  Local-Only mode. Settings → General now offers a second, independent
+  download — an [F5-TTS checkpoint trained on
+  Norwegian](https://huggingface.co/akhbar/F5_Norwegian), run through
+  `f5-tts-mlx` in the same venv, the same supervised daemon and the same 0600
+  socket as Kokoro. Install either voice, both, or neither; a daemon starts
+  with whatever is there, and loads the Norwegian model only when a Norwegian
+  read actually arrives.
+
+  F5-TTS is a zero-shot cloner rather than a model with baked-in speakers: it
+  reads in the voice of a short reference recording. So a Norwegian offline
+  voice in sr *is* a recording — the sample the model repo ships, if it ships
+  one, plus any you add yourself under Settings → Voices. sr converts whatever
+  you pick to the 24 kHz mono the model wants, keeps only that copy, and never
+  sends it anywhere. The transcript you type has to match the recording word
+  for word; that pairing is how F5 lines a voice up with text.
+
+  Two details worth knowing. The install resolves the model repo's layout
+  rather than assuming it — a community fine-tune names its checkpoint
+  whatever it likes, and may ship `.pt` instead of `.safetensors` — then
+  records the commit it resolved and the SHA-256 of every file it wrote, and
+  re-checks that record on each launch. `make pin-f5-model` prints those
+  values as Swift constants to freeze the model to one commit for good. And
+  because the two F5-TTS architectures share every tensor shape, a checkpoint
+  cannot be inspected to tell which it is: sr goes by what the repo's config
+  declares, and Settings → Voices has a one-click switch for when Norwegian
+  comes out as babble rather than speech.
+
+  One thing to do after updating, if you already had the English offline
+  voice: the shared dependency lock gained `f5-tts-mlx`, so the existing
+  install no longer matches it and Settings → General offers **Update English
+  Voice Runtime…**. Click it once — the Kokoro model is already in the
+  Hugging Face cache, so it rebuilds the environment rather than
+  re-downloading anything. Until then, English reads fall back to the cloud.
+
 - Accessibility and Keychain access no longer reset on every `make update`.
   macOS keys the Accessibility (TCC) grant and a Keychain item's ACL on an app's
   code signature, and with no certificate on the machine `codesign` signs
