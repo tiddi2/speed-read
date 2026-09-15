@@ -1,4 +1,5 @@
-.PHONY: build test app run install update quit-sr clean
+.PHONY: build test app run install update setup-signing reset-permissions \
+        signing-status quit-sr clean
 
 build:
 	swift build
@@ -31,7 +32,7 @@ run: app
 # replaces /Applications/sr.app outright. The Accessibility grant follows the
 # signing identity (bundle id + sr-dev cert), not the path, so it survives this.
 # For routine updates prefer `make update`.
-install: app
+install: setup-signing app
 	@$(MAKE) --no-print-directory quit-sr
 	rm -rf /Applications/sr.app
 	cp -R dist/sr.app /Applications/sr.app
@@ -52,13 +53,39 @@ install: app
 # ~/Library/Application Support/sr. None of those are inside sr.app.
 update:
 	git pull --ff-only
+	@$(MAKE) --no-print-directory setup-signing
 	@$(MAKE) --no-print-directory app
 	@$(MAKE) --no-print-directory quit-sr
-	@rsync -a --delete dist/sr.app/ /Applications/sr.app/
-	@open /Applications/sr.app
-	@security find-identity -v -p codesigning 2>/dev/null | grep -q '"sr-dev"' || \
-	  printf 'note: no "sr-dev" signing certificate. Every rebuild then has a different\n      identity, so macOS treats it as a new app and re-prompts for Keychain\n      and Accessibility access. Creating the cert once stops that for good —\n      see README > Development.\n' >&2
+	@prev="$$(codesign -d -r- /Applications/sr.app 2>/dev/null | sed -n 's/^designated => //p')"; \
+	 new="$$(codesign -d -r- dist/sr.app 2>/dev/null | sed -n 's/^designated => //p')"; \
+	 rsync -a --delete dist/sr.app/ /Applications/sr.app/; \
+	 open /Applications/sr.app; \
+	 if [ -n "$$prev" ] && [ "$$new" != "$$prev" ]; then \
+	   printf 'note: this build'"'"'s code identity differs from the installed one, so\n      macOS will ask for Accessibility (and the Keychain) once more.\n      It is stable from the next update on.\n' >&2; \
+	 fi
 	@echo "sr updated and relaunched. Preferences, API key and cache untouched."
+
+# Creates the local "sr-dev" code-signing identity the first time, then does
+# nothing on later runs. This is what keeps macOS from treating each rebuild as
+# a new app — see README > Development. `make app` runs it too.
+setup-signing:
+	@bash scripts/setup-signing.sh
+
+# Prove the identity works, and say where its key lives.
+signing-status:
+	@bash scripts/setup-signing.sh --check
+
+# Clear sr's stale Accessibility grants in one go — the list can hold one dead
+# entry per ad-hoc build ever installed, and a stale entry can look enabled
+# while granting nothing. Run once after `make setup-signing`, approve sr when
+# it asks, and that grant then survives every update.
+reset-permissions:
+	@$(MAKE) --no-print-directory quit-sr
+	@tccutil reset Accessibility com.patrickellis.sr >/dev/null 2>&1 || true
+	@echo "Cleared sr's Accessibility entries. Remove any leftover 'sr' rows in"
+	@echo "System Settings > Privacy & Security > Accessibility, then relaunch sr"
+	@echo "and approve once."
+	@open /Applications/sr.app 2>/dev/null || true
 
 # Quit a running sr the way the Quit menu item does, so shutdown work happens.
 # Falls back to a kill if it has not exited in ~5s. The bracketed dot keeps the

@@ -34,4 +34,5 @@ jobs:
       - name: Check packaging and daemon syntax
         run: |
           bash -n scripts/build-app.sh
+          bash -n scripts/setup-signing.sh
           python3 -m py_compile daemon/sr_tts_server.py
