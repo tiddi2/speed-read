@@ -6,10 +6,12 @@ sr is a privacy-first text-to-speech utility for macOS. It lives in your menu ba
 
 ## Features
 
-- **Read anything, anywhere** — global hotkey (default ⌥⇧/) speaks the current selection in Safari, Chrome, Preview PDFs, VS Code, Slack, Mail, Terminal. Accessibility-API capture first; clipboard fallback restores your clipboard byte-for-byte.
+- **Read anything, anywhere** — a global hotkey per language (default ⌥A English, ⌥⇧A Norwegian) speaks the current selection in Safari, Chrome, Preview PDFs, VS Code, Slack, Mail, Terminal. Accessibility-API capture first; clipboard fallback restores your clipboard byte-for-byte.
+- **One language per hotkey, never a third** — each language has its own voice and model, and the language is pinned on the request (`language_code`) instead of being detected from the text. Norwegian is cloud-only: the offline voice has no Norwegian, so it is never substituted.
+- **Fully rebindable** — every hotkey (speak, clipboard, pause, stop, ±sentence, ±5 s, restart, speed) is configurable in Settings → Shortcuts.
 - **Top-tier voices** — ElevenLabs (Flash v2.5 / Turbo / Multilingual v2 / v3) with your account's full voice list, or the local Kokoro model (free, offline, Apple Silicon).
 - **Instant, pitch-perfect speed** — 0.5×–3.0× applied client-side with time-domain (WSOLA) stretching. Changing speed never re-generates audio and never costs credits.
-- **Full transport** — play/pause, ±5 s seek, restart, stop, live progress, from the menu bar panel.
+- **Full transport** — play/pause, ±1 sentence, ±5 s seek, restart, stop, live progress, from the menu bar panel or the keyboard.
 - **Smart text cleanup** — PDF line-break repair, LaTeX math to spoken English, Markdown stripping, citations, units, URLs — ported from [Speak11](https://github.com/smcantab/speak11) and parity-tested.
 - **Cache-first** — repeated reads are instant and free (content-addressed local cache, size-capped, purgeable, disableable, with burst writes coalesced into one maintenance sweep).
 - **Bounded read-ahead** — prepares only the current sentence plus five ahead; pausing prevents new requests and stopping cancels pending work. Requests already sent may still be billed.
@@ -34,25 +36,37 @@ make install        # builds sr.app and installs it to /Applications
 Then, one-time setup:
 
 1. **Grant Accessibility** when prompted (System Settings → Privacy & Security → Accessibility → enable **sr**). This is what lets sr read your selection; the hotkey itself works without it.
-2. **Add your ElevenLabs key**: menu bar → waveform icon → Settings… → paste key → Save. It is stored only in the macOS Keychain. Recommended: create a dedicated key scoped to *Text-to-Speech + User Read*, and opt out of training under ElevenLabs → Terms & Privacy → Data Use.
-3. *(Optional, for offline use)* click **Install Local Voice (Kokoro, ~330 MB)** in the menu. The Python version and full dependency closure are pinned and hash-verified; the model revision and behavior-defining files are checksum-verified too.
+2. **Add your ElevenLabs key**: menu bar → waveform icon → Settings… → Cost → paste key → Save. It is stored only in the macOS Keychain. Recommended: create a dedicated key scoped to *Text-to-Speech + User Read*, and opt out of training under ElevenLabs → Terms & Privacy → Data Use.
+3. *(Optional, for offline use)* click **Install Local Voice (Kokoro, ~330 MB)** in Settings → General. The Python version and full dependency closure are pinned and hash-verified; the model revision and behavior-defining files are checksum-verified too.
 4. *(Optional)* System Settings → General → Login Items → **+** → `/Applications/sr.app` to start at login.
 
 ## Usage
 
 | Action | How |
 |---|---|
-| Speak selection | Select text anywhere, press **⌥⇧/** (re-press replaces the current read) |
+| Speak selection — English | Select text anywhere, press **⌥A** (re-press replaces the current read) |
+| Speak selection — Norwegian | Same, **⌥⇧A** |
 | Pause / resume | **⌥⇧.** or the menu panel |
-| Seek, restart, stop, speed | Menu bar panel — transport buttons, slider, one-click speed presets |
-| Speak clipboard | Menu → Speak Clipboard |
-| Change hotkeys | Menu → Settings… |
-| Backend | **Auto** (cloud, falls back to local), **Cloud**, **Local 🔒** |
+| Previous / next sentence | **⌥⇧,** / **⌥⇧/** or the menu panel |
+| Seek, restart, stop, speed | Menu bar panel, or bind hotkeys in Settings → Shortcuts |
+| Speak clipboard | Menu → Speak Clipboard → Norwegian / English |
+| Change hotkeys | Settings (⌘,) → Shortcuts |
+| Voice & model per language | Settings (⌘,) → Voices |
+| Backend | Settings → General: **Auto** (cloud, falls back to local), **Cloud**, **Local 🔒** |
+
+sr only ever reads Norwegian or English, and only the one you asked for. The
+language is sent to ElevenLabs as `language_code`, which pins both the model and
+its text normalization — so a Norwegian selection is never read as English or
+anything else. Only **Flash v2.5** and **Turbo v2.5** accept that parameter;
+Settings → Voices warns if you pick Multilingual v2 or v3, which detect the
+language from the text instead. Kokoro has no Norwegian voice, so Norwegian
+reads always use ElevenLabs and are refused (not substituted) in Local-Only mode.
 
 CLI (same binary):
 
 ```sh
 /Applications/sr.app/Contents/MacOS/sr --speak article.md      # or "-" for stdin
+/Applications/sr.app/Contents/MacOS/sr --speak artikkel.md --lang no
 /Applications/sr.app/Contents/MacOS/sr --speak-clipboard --local
 # Explicitly bypass cloud budget/large-read gates for one invocation:
 /Applications/sr.app/Contents/MacOS/sr --speak article.md --override-cost-controls

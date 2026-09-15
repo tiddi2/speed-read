@@ -116,12 +116,17 @@ public final class AudioCache: @unchecked Sendable {
 
     // MARK: - Keying
 
+    /// `languageCode` is the language actually pinned on the request ("" when
+    /// the provider was left to detect it). Without it, the same sentence read
+    /// as Norwegian and as English would collide on one cache entry and the
+    /// wrong pronunciation would be replayed.
     public static func key(text: String, provider: String, voiceID: String,
-                           modelID: String, settings: VoiceSettings) -> String {
+                           modelID: String, languageCode: String = "",
+                           settings: VoiceSettings) -> String {
         var hasher = SHA256()
         // \u{1F} separators prevent field-boundary collisions.
         let material = [
-            text, provider, voiceID, modelID,
+            text, provider, voiceID, modelID, languageCode,
             String(settings.stability), String(settings.similarityBoost),
             String(settings.style), String(settings.useSpeakerBoost),
         ].joined(separator: "\u{1F}")
