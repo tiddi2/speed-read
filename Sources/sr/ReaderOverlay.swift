@@ -85,8 +85,10 @@ final class ReaderOverlayController {
         layout.maxTextHeight = Self.maxTextHeight(on: screen)
         resizeToFit()
         place(panel, on: screen)
-        // orderFrontRegardless, not makeKeyAndOrderFront: sr is an accessory
-        // app reading another app's selection and must not steal focus.
+        // orderFrontRegardless, not makeKeyAndOrderFront: sr is reading
+        // another app's selection and must not steal focus. This holds
+        // whichever activation policy sr is running under (see AppIcon) —
+        // the panel is non-activating and never becomes key.
         panel.orderFrontRegardless()
     }
 

@@ -120,16 +120,26 @@ public final class AudioCache: @unchecked Sendable {
     /// the provider was left to detect it). Without it, the same sentence read
     /// as Norwegian and as English would collide on one cache entry and the
     /// wrong pronunciation would be replayed.
+    /// `variant` carries anything else that changes what the provider will
+    /// produce for identical text — today the pronunciation-dictionary
+    /// version actually sent (F-13). Empty when there is none.
     public static func key(text: String, provider: String, voiceID: String,
                            modelID: String, languageCode: String = "",
+                           variant: String = "",
                            settings: VoiceSettings) -> String {
         var hasher = SHA256()
         // \u{1F} separators prevent field-boundary collisions.
-        let material = [
+        var material = [
             text, provider, voiceID, modelID, languageCode,
             String(settings.stability), String(settings.similarityBoost),
             String(settings.style), String(settings.useSpeakerBoost),
         ].joined(separator: "\u{1F}")
+        // Appended rather than inserted, so keys for reads without a
+        // pronunciation dictionary keep hashing exactly as they did before
+        // and their cached audio survives the upgrade.
+        if !variant.isEmpty {
+            material += "\u{1F}" + variant
+        }
         hasher.update(data: Data(material.utf8))
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }

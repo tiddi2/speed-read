@@ -9,7 +9,8 @@ sr is a privacy-first text-to-speech utility for macOS. It lives in your menu ba
 - **Read anything, anywhere** — a global hotkey per language (default ⌥A English, ⌥⇧A Norwegian) speaks the current selection in Safari, Chrome, Preview PDFs, VS Code, Slack, Mail, Terminal. Accessibility-API capture first; clipboard fallback restores your clipboard byte-for-byte.
 - **One language per hotkey, never a third** — each language has its own voice and model, and the language is pinned on the request (`language_code`) instead of being detected from the text. Norwegian is cloud-only: the offline voice has no Norwegian, so it is never substituted.
 - **Fully rebindable** — every hotkey (speak, clipboard, pause, stop, ±sentence, ±5 s, restart, speed) is configurable in Settings → Shortcuts.
-- **Top-tier voices** — ElevenLabs (Flash v2.5 / Turbo / Multilingual v2 / v3) with your account's full voice list, or the local Kokoro model (free, offline, Apple Silicon).
+- **Top-tier voices, auditioned before you pick one** — ElevenLabs (Flash v2.5 / Turbo / Multilingual v2 / v3) with your account's full voice list, or the local Kokoro model (free, offline, Apple Silicon). Every voice in Settings has a play button, and the sample is synthesized with that language's own model and language lock — so a Norwegian voice is auditioned in Norwegian, not in a canned English demo clip.
+- **Custom pronunciations, per language** — teach sr the names, acronyms and loan words it gets wrong. Respellings ("Nguyen" → "Nwin") are applied on your Mac, so they work on every model and with the offline voice and never leave the machine; IPA / CMU phoneme entries are uploaded as an ElevenLabs pronunciation dictionary. Each entry can be heard both ways — as it sounds now, and as your rule would have it — before you keep it.
 - **Instant, pitch-perfect speed** — 0.5×–3.0× applied client-side with time-domain (WSOLA) stretching. Changing speed never re-generates audio and never costs credits.
 - **Full transport** — play/pause, ±1 sentence, ±5 s seek, restart, stop, live progress, from the menu bar panel or the keyboard.
 - **See what you're hearing** — an optional borderless reader floats over whatever you're reading from, showing the previous, current and next sentence *in full* with the spoken word highlighted, plus play/pause, sentence stepping, speed and language. Nothing is truncated: the window sizes itself to the text. It never takes focus, so your selection survives.
@@ -54,7 +55,8 @@ Then, one-time setup:
 | Show / hide the reader overlay | Settings → General, the overlay's ✕, or a hotkey you bind |
 | Speak clipboard | Menu → Speak Clipboard → Norwegian / English |
 | Change hotkeys | Settings (⌘,) → Shortcuts |
-| Voice & model per language | Settings (⌘,) → Voices |
+| Voice & model per language | Settings (⌘,) → Voices — ▶ on a row plays a sample |
+| Custom pronunciations | Settings → Pronunciation (per language, with before/after playback) |
 | Backend | Settings → General: **Auto** (cloud, falls back to local), **Cloud**, **Local 🔒** |
 
 ### The reader overlay
@@ -120,6 +122,7 @@ CLI (same binary):
 - **Clipboard integrity** — the ⌘C fallback snapshots and restores your full clipboard (images, RTF, files), verifies ownership via change count, and restores again if a delayed copy arrives after timeout.
 - **Concealed-content refusal** — content marked protected through Accessibility or concealed through `org.nspasteboard.ConcealedType` is never spoken, cached, logged, or transmitted.
 - **Content-free logging** — logs record counts, latencies, and status codes. Never your text.
+- **Pronunciations stay local unless they can't** — respelling entries are applied on this Mac before any text is sent, and are never uploaded. Only phoneme entries (IPA / Arpabet), which nothing but ElevenLabs can act on, are uploaded as a pronunciation dictionary — and not at all in Local-Only mode.
 - **The reader overlay is local and transient** — it renders text that is already being read on this Mac, holds it only while the read is in progress, drops it on stop, and never writes it anywhere. Turn it off in Settings → General if a screen is the wrong place for what you're reading.
 - **Cloud history auto-delete** — every ElevenLabs generation is deleted from your account history seconds after synthesis (on by default; best-effort — see ElevenLabs' retention docs for backup windows).
 - **Per-app routing** — block sr in specific apps or force the local voice for sensitive ones (`~/Library/Application Support/sr/rules.json`); password managers are blocked out of the box.
@@ -128,7 +131,7 @@ CLI (same binary):
 
 | Host | When |
 |---|---|
-| `api.elevenlabs.io` | Cloud synthesis, voice list, credits, history deletion |
+| `api.elevenlabs.io` | Cloud synthesis, voice list, credits, history deletion, phoneme pronunciation dictionaries |
 | `huggingface.co` | Only during the explicit local-voice install |
 | `github.com` / PyPI | Only during the explicit local-voice install (pinned Python packages) |
 
@@ -171,6 +174,10 @@ Two toolchain notes:
 
 - **Signing / Keychain / Accessibility across rebuilds**: without a codesigning identity, builds are ad-hoc signed, which means *every build has a different identity*. macOS keys both the Accessibility grant and the Keychain ACL on that identity, so each rebuild looks like a brand-new app: the grant is forgotten and you are asked for your Keychain password again. This is not caused by reinstalling — an in-place update re-prompts just the same. The fix is a stable identity: create a self-signed code-signing certificate named `sr-dev` (Keychain Access → Certificate Assistant → Create a Certificate… → type *Code Signing*) and `build-app.sh` picks it up automatically, after which both stick across rebuilds.
 - **`make test` targets a Command-Line-Tools-only toolchain** (it wires the Swift Testing framework paths manually). With full Xcode installed, plain `swift test` should also work.
+
+The app icon is generated rather than checked in as images: `python3 scripts/make-icon.py`
+(needs Pillow) redraws `resources/sr.icns` from the parameters at the top of that
+script, and `build-app.sh` copies it into the bundle.
 
 Layout: `Sources/SRCore` (engine: normalizer, providers, cache, cost, privacy), `Sources/sr` (menu bar app, playback, capture, CLI), `daemon/` (local TTS daemon plus its hashed dependency lock), `Tests/` (core, app CLI, daemon, and parity tests). `PROGRESS.md` tracks the build log and roadmap (Shortcuts, MCP server, URL scheme, notarized releases).
 

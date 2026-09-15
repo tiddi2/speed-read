@@ -34,6 +34,7 @@ public struct SettingsStore {
         static let autoDeleteHistory = "autoDeleteHistory"
         static let cacheEnabled = "cacheEnabled"
         static let backendMode = "backendMode"
+        static let showInDock = "showInDock"
         static let readerOverlayEnabled = "readerOverlayEnabled"
         static let readerShowsPreviousSentence = "readerShowsPreviousSentence"
         static let readerShowsCurrentSentence = "readerShowsCurrentSentence"
@@ -140,6 +141,14 @@ public struct SettingsStore {
             BackendMode(rawValue: defaults.string(forKey: Key.backendMode) ?? "") ?? .auto
         }
         nonmutating set { defaults.set(newValue.rawValue, forKey: Key.backendMode) }
+    }
+
+    /// Whether sr keeps a Dock icon while it runs. sr is an `LSUIElement`
+    /// app, so this is applied at runtime by raising the activation policy
+    /// rather than by the bundle — see AppIcon.
+    public var showInDock: Bool {
+        get { bool(Key.showInDock, default: true) }
+        nonmutating set { defaults.set(newValue, forKey: Key.showInDock) }
     }
 
     // MARK: - Reader overlay

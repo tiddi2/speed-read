@@ -35,6 +35,23 @@ public struct ElevenLabsProvider: TTSProvider {
         languageLockedModelIDs.contains(modelID)
     }
 
+    /// Models that act on `phoneme` rules in a pronunciation dictionary.
+    /// Every other model silently ignores them and falls back to its own
+    /// pronunciation — including the v2.5 pair sr defaults to, which is why
+    /// Settings steers phoneme rules towards a respelling instead.
+    /// `alias` rules are honoured by every model (and sr applies those
+    /// itself, before the text is ever sent).
+    public static let phonemeCapableModelIDs: Set<String> = [
+        "eleven_v3",
+        "eleven_flash_v2",
+        "eleven_turbo_v2",
+        "eleven_monolingual_v1",
+    ]
+
+    public static func supportsPhonemeRules(_ modelID: String) -> Bool {
+        phonemeCapableModelIDs.contains(modelID)
+    }
+
     /// The language code that will actually be sent for `language` on
     /// `modelID` — nil when the model cannot be pinned to a language.
     ///
@@ -62,11 +79,18 @@ public struct ElevenLabsProvider: TTSProvider {
     /// ISO 639-1 language to pin this provider to, already filtered down to
     /// what `modelID` accepts (nil = let the model detect the language).
     public let languageCode: String?
+    /// Uploaded pronunciation dictionaries to apply, already filtered down to
+    /// what `modelID` can act on (empty = send none).
+    public let pronunciationLocators: [PronunciationDictionaryLocator]
 
     public init(modelID: String = ElevenLabsProvider.defaultModelID,
-                language: SpeechLanguage? = nil) {
+                language: SpeechLanguage? = nil,
+                pronunciationLocator: PronunciationDictionaryLocator? = nil) {
         self.modelID = modelID
         self.languageCode = Self.lockedLanguageCode(for: language, modelID: modelID)
+        self.pronunciationLocators = Self.supportsPhonemeRules(modelID)
+            ? [pronunciationLocator].compactMap { $0 }
+            : []
     }
 
     public func voices() async throws -> [Voice] {
@@ -130,12 +154,18 @@ public struct ElevenLabsProvider: TTSProvider {
             /// Omitted entirely when nil — models outside
             /// `languageLockedModelIDs` reject the field.
             let language_code: String?
+            /// Omitted when empty; the API caps this at three locators.
+            let pronunciation_dictionary_locators: [DictionaryLocator]?
             let voice_settings: Settings
         }
+        let locators: [DictionaryLocator]? = pronunciationLocators.isEmpty
+            ? nil
+            : pronunciationLocators.prefix(3).map { DictionaryLocator($0) }
         request.httpBody = try JSONEncoder().encode(Body(
             text: text,
             model_id: modelID,
             language_code: languageCode,
+            pronunciation_dictionary_locators: locators,
             voice_settings: .init(
                 stability: settings.stability,
                 similarity_boost: settings.similarityBoost,
@@ -205,6 +235,86 @@ public struct ElevenLabsProvider: TTSProvider {
             "history_id_present": historyID == nil ? "0" : "1",
         ])
         return SynthesisResult(audio: data, remoteHistoryItemID: historyID, billedCharacters: billed)
+    }
+
+    // MARK: - Pronunciation dictionaries (F-13)
+
+    /// Wire shape of a locator on the TTS request.
+    struct DictionaryLocator: Encodable, Sendable {
+        let pronunciation_dictionary_id: String
+        let version_id: String
+
+        init(_ locator: PronunciationDictionaryLocator) {
+            self.pronunciation_dictionary_id = locator.dictionaryID
+            self.version_id = locator.versionID
+        }
+    }
+
+    /// Upload `rules` as a new pronunciation dictionary and return its
+    /// locator. Only `.phoneme` rules are sent: `.alias` rules are applied
+    /// locally (see PronunciationStore), so uploading them would mean sending
+    /// words that never need to leave the Mac.
+    public func createPronunciationDictionary(
+        name: String,
+        rules: [PronunciationRule]
+    ) async throws -> PronunciationDictionaryLocator {
+        guard let key = KeychainStore.readAPIKey() else { throw TTSError.missingAPIKey }
+
+        struct Rule: Encodable {
+            let string_to_replace: String
+            let type: String
+            let phoneme: String
+            let alphabet: String
+        }
+        struct Body: Encodable {
+            let name: String
+            let rules: [Rule]
+        }
+        let payload = rules
+            .filter { $0.isActive && $0.kind == .phoneme }
+            .map {
+                Rule(string_to_replace: $0.stringToReplace,
+                     type: "phoneme",
+                     phoneme: $0.phoneme,
+                     alphabet: $0.alphabet.rawValue)
+            }
+        guard !payload.isEmpty else {
+            throw TTSError.http(status: 400, body: "no phoneme rules to upload")
+        }
+
+        var request = URLRequest(
+            url: URL(string: "https://api.elevenlabs.io/v1/pronunciation-dictionaries/add-from-rules")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue(key, forHTTPHeaderField: "xi-api-key")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(Body(name: name, rules: payload))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw TTSError.network(underlying: error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw TTSError.network(underlying: "non-HTTP response")
+        }
+        guard (200...299).contains(http.statusCode) else {
+            throw TTSError.http(status: http.statusCode,
+                                body: String(data: data.prefix(300), encoding: .utf8))
+        }
+        struct Created: Decodable {
+            let id: String?
+            let pronunciation_dictionary_id: String?
+            let version_id: String
+        }
+        let created = try JSONDecoder().decode(Created.self, from: data)
+        guard let dictionaryID = created.id ?? created.pronunciation_dictionary_id else {
+            throw TTSError.http(status: http.statusCode, body: "dictionary id missing")
+        }
+        return PronunciationDictionaryLocator(dictionaryID: dictionaryID,
+                                              versionID: created.version_id)
     }
 
     // MARK: - Account info (C-1)

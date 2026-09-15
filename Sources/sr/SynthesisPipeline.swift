@@ -31,13 +31,17 @@ final class SynthesisPipeline: @unchecked Sendable {
         /// Language actually pinned on the request, for cache keying; "" when
         /// the provider was left to detect it from the text.
         let languageCode: String
+        /// Anything else that changes the audio for identical text — today
+        /// the pronunciation-dictionary version sent with the request (F-13).
+        let variant: String
 
         init(provider: any TTSProvider, voiceID: String, modelID: String,
-             languageCode: String = "") {
+             languageCode: String = "", variant: String = "") {
             self.provider = provider
             self.voiceID = voiceID
             self.modelID = modelID
             self.languageCode = languageCode
+            self.variant = variant
         }
     }
 
@@ -74,6 +78,7 @@ final class SynthesisPipeline: @unchecked Sendable {
             AudioCache.key(text: chunk.text, provider: route.provider.id,
                            voiceID: route.voiceID, modelID: route.modelID,
                            languageCode: route.languageCode,
+                           variant: route.variant,
                            settings: settings)
         }
 

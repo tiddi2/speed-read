@@ -12,6 +12,10 @@ final class AppState: ObservableObject {
     let settings = SettingsStore()
     let playback: PlaybackEngine
     let ledger = CostLedger()
+    let pronunciations = PronunciationStore.shared
+    /// Short auditions played from Settings. Separate from `playback` on
+    /// purpose — hearing a voice must never disturb a read in progress.
+    let preview = VoicePreviewer()
     private let pipeline = SynthesisPipeline()
     private let janitor = HistoryJanitor()
     private var routing = RoutingPolicy.load()
@@ -79,6 +83,77 @@ final class AppState: ObservableObject {
         ElevenLabsProvider.supportsLanguageLock(modelID(for: language))
     }
 
+    // MARK: - Custom pronunciations (F-13)
+    //
+    // Mirrored here so SwiftUI re-renders on an edit; PronunciationStore is
+    // the durable copy and the one the read path consults.
+    @Published private var pronunciationRules: [SpeechLanguage: [PronunciationRule]]
+    // Status and sync are per language: both languages sync at launch, and
+    // one shared slot would mean the second upload cancelled the first and
+    // overwrote whatever the first had to say.
+    @Published private var pronunciationStatusByLanguage: [SpeechLanguage: String] = [:]
+    @Published private var pronunciationSyncingLanguages: Set<SpeechLanguage> = []
+    private var pronunciationSyncTasks: [SpeechLanguage: Task<Void, Never>] = [:]
+
+    func rules(for language: SpeechLanguage) -> [PronunciationRule] {
+        pronunciationRules[language] ?? []
+    }
+
+    func pronunciationStatus(for language: SpeechLanguage) -> String {
+        pronunciationStatusByLanguage[language] ?? ""
+    }
+
+    func isSyncingPronunciations(for language: SpeechLanguage) -> Bool {
+        pronunciationSyncingLanguages.contains(language)
+    }
+
+    func setRules(_ rules: [PronunciationRule], for language: SpeechLanguage) {
+        pronunciationRules[language] = rules
+        pronunciations.setRules(rules, for: language)
+        syncPronunciations(for: language)
+    }
+
+    /// True when `language` has phoneme rules the chosen model will ignore.
+    /// Respellings always apply, so this is specifically about phonemes.
+    func phonemeRulesAreIgnored(_ language: SpeechLanguage) -> Bool {
+        !pronunciations.phonemeRules(for: language).isEmpty
+            && !ElevenLabsProvider.supportsPhonemeRules(modelID(for: language))
+    }
+
+    /// Upload edited phoneme rules to ElevenLabs so the next read can
+    /// reference them. Respellings need no upload — they are applied on this
+    /// Mac — so a Local-Only user with only respellings never hits the
+    /// network here, and one with phoneme rules is told why they are idle
+    /// rather than having their words uploaded behind the switch (P-8).
+    func syncPronunciations(for language: SpeechLanguage) {
+        guard pronunciations.needsPhonemeSync(for: language) else {
+            pronunciationStatusByLanguage[language] = ""
+            return
+        }
+        guard backendMode != .local else {
+            pronunciationStatusByLanguage[language] =
+                "Phoneme rules stay local until you leave Local-Only mode — respellings still apply."
+            return
+        }
+        pronunciationSyncTasks[language]?.cancel()
+        pronunciationSyncingLanguages.insert(language)
+        pronunciationSyncTasks[language] = Task { @MainActor [weak self] in
+            let outcome = await PronunciationSyncer.sync(language: language)
+            guard let self, !Task.isCancelled else { return }
+            self.pronunciationSyncTasks[language] = nil
+            self.pronunciationSyncingLanguages.remove(language)
+            switch outcome {
+            case .upToDate:
+                self.pronunciationStatusByLanguage[language] = ""
+            case .uploaded:
+                self.pronunciationStatusByLanguage[language] =
+                    "Phoneme rules sent to ElevenLabs."
+            case .failed(let message):
+                self.pronunciationStatusByLanguage[language] = message
+            }
+        }
+    }
+
     /// Backend mode; `.local` is the Local-Only master switch (P-8).
     @Published var backendMode: SettingsStore.BackendMode {
         didSet {
@@ -89,6 +164,15 @@ final class AppState: ObservableObject {
                 stop()
                 flashStatus("Cloud read stopped — Local-Only is active")
             }
+        }
+    }
+    /// Dock presence (see AppIcon). sr launches as an accessory app and
+    /// raises its activation policy here, so the icon appears without the
+    /// Dock tile flashing before preferences are read.
+    @Published var showInDock: Bool {
+        didSet {
+            settings.showInDock = showInDock
+            applyActivationPolicy()
         }
     }
     @Published var autoDeleteHistory: Bool {
@@ -251,7 +335,13 @@ final class AppState: ObservableObject {
         voiceIDByLanguage = voices
         modelIDByLanguage = models
         localVoiceIDByLanguage = localVoices
+        var rules: [SpeechLanguage: [PronunciationRule]] = [:]
+        for language in SpeechLanguage.allCases {
+            rules[language] = PronunciationStore.shared.rules(for: language)
+        }
+        pronunciationRules = rules
         backendMode = store.backendMode
+        showInDock = store.showInDock
         autoDeleteHistory = store.autoDeleteHistory
         cacheEnabled = store.cacheEnabled
         readerOverlayEnabled = store.readerOverlayEnabled
@@ -270,12 +360,22 @@ final class AppState: ObservableObject {
         playback.objectWillChange
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        preview.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
 
         if !accessibilityGranted {
             promptForAccessibility()
         }
         refreshCredits()
         refreshVoices()
+
+        // Phoneme rules edited while the app was closed (or whose upload
+        // failed last time) are re-sent now, so the first read of the session
+        // already carries them.
+        for language in SpeechLanguage.allCases {
+            syncPronunciations(for: language)
+        }
 
         // Resume history deletions that were pending when the app last quit.
         if let ids = UserDefaults.standard.stringArray(forKey: Self.pendingDeletesKey),
@@ -523,16 +623,25 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func cloudRoute(for language: SpeechLanguage) -> SynthesisPipeline.Route {
+    private func cloudRoute(for language: SpeechLanguage,
+                           overridingVoice voiceOverride: String? = nil)
+        -> SynthesisPipeline.Route {
         let model = modelID(for: language)
+        // Phoneme rules only reach the voice on models that act on them; on
+        // every other model the locator is dropped rather than sent, so the
+        // cache key stays honest about what the request actually carried.
+        let locator = ElevenLabsProvider.supportsPhonemeRules(model)
+            ? pronunciations.locator(for: language) : nil
         return SynthesisPipeline.Route(
-            provider: ElevenLabsProvider(modelID: model, language: language),
-            voiceID: voiceID(for: language),
+            provider: ElevenLabsProvider(modelID: model, language: language,
+                                         pronunciationLocator: locator),
+            voiceID: voiceOverride ?? voiceID(for: language),
             modelID: model,
             // Cache under the language that is actually pinned, so an
             // auto-detected recording is never replayed as a locked one.
             languageCode: ElevenLabsProvider.lockedLanguageCode(
-                for: language, modelID: model) ?? "")
+                for: language, modelID: model) ?? "",
+            variant: locator?.versionID ?? "")
     }
 
     /// nil when the local model has no voice for `language`.
@@ -566,10 +675,16 @@ final class AppState: ObservableObject {
         let preparation = preparationGeneration
         preparationTask?.cancel()
         preparationTask = Task { @MainActor [weak self] in
+            let pronunciations: PronunciationStore = self?.pronunciations ?? .shared
             let worker = Task.detached(priority: .userInitiated) {
                 () -> (String, [Chunk])? in
                 guard !Task.isCancelled else { return nil }
-                let normalized = Normalizer.normalize(raw, language: language)
+                var normalized = Normalizer.normalize(raw, language: language)
+                // Custom respellings land after normalization and before
+                // chunking, so the text the cache hashes is the text the
+                // voice will be given (F-13).
+                normalized = pronunciations.applyAliases(to: normalized,
+                                                        language: language)
                 guard !Task.isCancelled else { return nil }
                 let chunks = Chunker.split(normalized)
                 guard !Task.isCancelled else { return nil }
@@ -735,6 +850,129 @@ final class AppState: ObservableObject {
                 }
             )
         )
+    }
+
+    // MARK: - Auditions (Settings previews)
+
+    /// Token namespaces, so a voice row and a pronunciation row can never
+    /// think the other one is the thing playing.
+    enum PreviewToken {
+        static func cloudVoice(_ voiceID: String, _ language: SpeechLanguage) -> String {
+            "cloud:\(language.rawValue):\(voiceID)"
+        }
+        static func localVoice(_ voiceID: String, _ language: SpeechLanguage) -> String {
+            "local:\(language.rawValue):\(voiceID)"
+        }
+        static func rule(_ id: UUID, applied: Bool) -> String {
+            "rule:\(applied ? "after" : "before"):\(id.uuidString)"
+        }
+    }
+
+    /// Audition an ElevenLabs voice with the model, language lock and
+    /// pronunciation dictionary this language actually reads with, so the
+    /// sample is what a real read will sound like — not a generic demo clip.
+    func previewCloudVoice(_ voiceID: String, language: SpeechLanguage) {
+        startPreview(token: PreviewToken.cloudVoice(voiceID, language),
+                     text: VoiceSample.text(for: language),
+                     route: cloudRoute(for: language, overridingVoice: voiceID))
+    }
+
+    /// Audition an offline (Kokoro) voice. Free, and it works with no key.
+    func previewLocalVoice(_ voiceID: String, language: SpeechLanguage) {
+        guard KokoroRuntime.shared.isInstalled, language.ownsLocalVoice(voiceID) else {
+            flashStatus(localUnavailableMessage(for: language))
+            return
+        }
+        let route = SynthesisPipeline.Route(
+            provider: KokoroProvider(language: language),
+            voiceID: voiceID,
+            modelID: KokoroProvider.cacheModelID,
+            languageCode: language.rawValue)
+        startPreview(token: PreviewToken.localVoice(voiceID, language),
+                     text: VoiceSample.text(for: language),
+                     route: route)
+    }
+
+    /// Speak `phrase` the way this language currently reads it. `applying`
+    /// adds one rule on top of what is already configured, which is what
+    /// makes the pronunciation editor's before/after pair meaningful.
+    func previewPhrase(_ phrase: String,
+                       language: SpeechLanguage,
+                       applying rule: PronunciationRule?,
+                       token: String) {
+        let trimmed = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        // Inline markup, not the uploaded dictionary: that way a rule can be
+        // heard while it is still being typed, with nothing sent anywhere
+        // but the phrase itself.
+        let spoken = rule.map { PronunciationStore.applyInline($0, to: trimmed) } ?? trimmed
+        let route = previewRoute(for: language)
+        startPreview(token: token, text: spoken, route: route)
+    }
+
+    /// The route an audition should use: the local voice in Local-Only mode
+    /// (or when the cloud has no credential), the cloud one otherwise.
+    private func previewRoute(for language: SpeechLanguage) -> SynthesisPipeline.Route {
+        let wantsLocal = backendMode == .local || KeychainStore.readAPIKey() == nil
+        if wantsLocal, let local = localRoute(for: language) { return local }
+        return cloudRoute(for: language)
+    }
+
+    private func startPreview(token: String, text: String,
+                              route: SynthesisPipeline.Route) {
+        if !route.provider.isLocal {
+            guard backendMode != .local else {
+                preview.stop()
+                flashStatus("Local-Only is on — cloud voices can't be auditioned.")
+                return
+            }
+            guard KeychainStore.readAPIKey() != nil else {
+                preview.stop()
+                flashStatus("No ElevenLabs API key — add one in Settings → Cost.")
+                return
+            }
+            if case .exceeded(let spent, let budget) = ledger.verdict() {
+                preview.stop()
+                flashStatus("Daily budget reached (\(spent.formatted()) of \(budget.formatted())) — no preview sent.")
+                return
+            }
+        }
+
+        let voiceSettings = settings.voiceSettings
+        let cache = cacheEnabled ? AudioCache.shared : nil
+        let key = AudioCache.key(text: text, provider: route.provider.id,
+                                 voiceID: route.voiceID, modelID: route.modelID,
+                                 languageCode: route.languageCode,
+                                 variant: route.variant,
+                                 settings: voiceSettings)
+        let provider = route.provider
+        let voiceID = route.voiceID
+        let isLocal = provider.isLocal
+        let ledger = ledger
+        let janitor = janitor
+        let deleteHistory = autoDeleteHistory
+
+        preview.toggle(token) {
+            // Cache-first, like every other synthesis: re-auditioning a voice
+            // you already heard costs nothing and starts instantly.
+            if let cached = cache?.lookup(key) { return cached }
+            let result = try await provider.synthesize(
+                text: text, voiceID: voiceID, settings: voiceSettings)
+            if !isLocal {
+                ledger.record(billedCharacters: max(result.billedCharacters ?? text.count, 0))
+                // Auditions are generations like any other — they belong in
+                // the same auto-delete sweep as reads (P-6).
+                if deleteHistory, let historyID = result.remoteHistoryItemID {
+                    await janitor.enqueue(historyID)
+                }
+            }
+            cache?.store(key, data: result.audio)
+            return result.audio
+        }
+        if !isLocal {
+            // The credit counter moves on a preview too; keep Settings honest.
+            refreshCredits()
+        }
     }
 
     // MARK: - Dialogs (C-2 / C-3)
@@ -925,6 +1163,32 @@ final class AppState: ObservableObject {
 
     func resetShortcutsToDefaults() {
         KeyboardShortcuts.reset(ShortcutCatalog.allNames)
+    }
+
+    // MARK: - Dock presence / activation policy
+
+    /// True while the Settings window is on screen. The policy is raised for
+    /// its lifetime even when the Dock icon is off: an accessory app never
+    /// truly becomes active, so key events bypass its windows and the
+    /// shortcut recorders would focus but receive nothing.
+    private var settingsWindowOpen = false
+
+    func settingsWindowDidOpen() {
+        settingsWindowOpen = true
+        applyActivationPolicy()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func settingsWindowDidClose() {
+        settingsWindowOpen = false
+        applyActivationPolicy()
+    }
+
+    func applyActivationPolicy() {
+        let wanted: NSApplication.ActivationPolicy =
+            showInDock || settingsWindowOpen ? .regular : .accessory
+        guard NSApp.activationPolicy() != wanted else { return }
+        NSApp.setActivationPolicy(wanted)
     }
 
     // MARK: - Accessibility onboarding
