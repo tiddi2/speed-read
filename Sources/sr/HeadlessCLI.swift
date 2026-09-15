@@ -235,7 +235,7 @@ enum HeadlessCLI {
             print("input too large (maximum \(Chunker.maxReadCharacters) characters)")
             return 1
         }
-        let normalized = Normalizer.normalize(text)
+        let normalized = Normalizer.normalize(text, language: language)
         guard normalized.count <= Chunker.maxReadCharacters else {
             print("input too large (maximum \(Chunker.maxReadCharacters) characters)")
             return 1

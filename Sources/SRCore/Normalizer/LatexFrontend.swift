@@ -27,7 +27,8 @@ extension Normalizer {
             .appendingPathComponent("sr/latex_macros.tex")
     }
 
-    static func frontendLatex(_ input: String) -> String {
+    static func frontendLatex(_ input: String,
+                              _ lexicon: NormalizerLexicon = .english) -> String {
         var t = input
 
         // ── L1: Comment and preamble stripping ──
@@ -298,7 +299,7 @@ extension Normalizer {
         t = t.sub(#"\\title\{((?:[^{}]|\{[^{}]*\})*)\}"#, "Title: $1. ")
         t = t.sub(#"\\author\{((?:[^{}]|\{[^{}]*\})*)\}"#, "Authors: $1. ")
         // Special characters (\& and \$ already protected to \x01/\x02).
-        t = t.replacingOccurrences(of: "\\%", with: " percent ")
+        t = t.replacingOccurrences(of: "\\%", with: " " + lexicon.percent + " ")
         t = t.replacingOccurrences(of: "\\#", with: "number ")
         t = t.replacingOccurrences(of: "\\{", with: "(")
         t = t.replacingOccurrences(of: "\\}", with: ")")

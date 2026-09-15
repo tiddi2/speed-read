@@ -100,6 +100,10 @@ Settings → Voices warns if you pick Multilingual v2 or v3, which detect the
 language from the text instead. Kokoro has no Norwegian voice, so Norwegian
 reads always use ElevenLabs and are refused (not substituted) in Local-Only mode.
 
+sr's own text normalization follows the same language: the words it spells out
+before the voice ever sees them — "50 %", `f.eks.`, `∧` — are Norwegian in a
+Norwegian read and English in an English one.
+
 CLI (same binary):
 
 ```sh
@@ -148,11 +152,24 @@ make build     # debug build
 make test      # core + app CLI + daemon unit tests and normalization parity
 make app       # release build → dist/sr.app (locally signed)
 make run       # build + launch from dist/
+make install   # first install: build + replace /Applications/sr.app
+make update    # routine update: pull + build + swap the bundle + relaunch
 ```
+
+`make update` is the everyday command once sr is installed. It quits sr the way
+the Quit menu item does, so shutdown work still runs (pending ElevenLabs history
+deletions are persisted, the local daemon is stopped) instead of being killed
+mid-flight, and it syncs the bundle in place rather than deleting and recopying
+it. Use `make install` for the first install, or to replace a bundle outright.
+
+Neither command can reset your preferences. Voices, models, hotkeys, speed,
+budget and backend mode live in UserDefaults (`com.patrickellis.sr`), the API key
+lives in the login Keychain, and the audio cache and local voice live in
+`~/Library/Application Support/sr` — none of which are inside `sr.app`.
 
 Two toolchain notes:
 
-- **Signing / Accessibility across rebuilds**: without a codesigning identity, builds are ad-hoc signed and macOS forgets the Accessibility grant after every rebuild. Create a self-signed code-signing certificate named `sr-dev` (Keychain Access → Certificate Assistant → Create a Certificate… → type *Code Signing*) and `build-app.sh` picks it up automatically, making the grant stick.
+- **Signing / Keychain / Accessibility across rebuilds**: without a codesigning identity, builds are ad-hoc signed, which means *every build has a different identity*. macOS keys both the Accessibility grant and the Keychain ACL on that identity, so each rebuild looks like a brand-new app: the grant is forgotten and you are asked for your Keychain password again. This is not caused by reinstalling — an in-place update re-prompts just the same. The fix is a stable identity: create a self-signed code-signing certificate named `sr-dev` (Keychain Access → Certificate Assistant → Create a Certificate… → type *Code Signing*) and `build-app.sh` picks it up automatically, after which both stick across rebuilds.
 - **`make test` targets a Command-Line-Tools-only toolchain** (it wires the Swift Testing framework paths manually). With full Xcode installed, plain `swift test` should also work.
 
 Layout: `Sources/SRCore` (engine: normalizer, providers, cache, cost, privacy), `Sources/sr` (menu bar app, playback, capture, CLI), `daemon/` (local TTS daemon plus its hashed dependency lock), `Tests/` (core, app CLI, daemon, and parity tests). `PROGRESS.md` tracks the build log and roadmap (Shortcuts, MCP server, URL scheme, notarized releases).

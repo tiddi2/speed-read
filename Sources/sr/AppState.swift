@@ -569,7 +569,7 @@ final class AppState: ObservableObject {
             let worker = Task.detached(priority: .userInitiated) {
                 () -> (String, [Chunk])? in
                 guard !Task.isCancelled else { return nil }
-                let normalized = Normalizer.normalize(raw)
+                let normalized = Normalizer.normalize(raw, language: language)
                 guard !Task.isCancelled else { return nil }
                 let chunks = Chunker.split(normalized)
                 guard !Task.isCancelled else { return nil }

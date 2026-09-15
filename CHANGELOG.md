@@ -10,13 +10,12 @@
   off in Settings → General, as can the overlay itself. All three are shown
   whole — nothing is truncated — and the window's height follows the text; a
   sentence too long for the screen makes the pane scroll and follow the read
-  rather than clip. It carries
-  previous-sentence / play-pause / next-sentence buttons, a progress bar, the
-  sentence counter, and read-only readouts of the playback speed and the
-  language being read. The overlay never takes keyboard focus, so the selection
-  in the app you read from stays intact. ⌥⇧[ and ⌥⇧] (new defaults) change the
-  speed the readout shows; the overlay itself is bound to no key by default but
-  can be given one in Settings → Shortcuts.
+  rather than clip. It carries previous-sentence / play-pause / next-sentence
+  buttons, a progress bar, the sentence counter, and read-only readouts of the
+  playback speed and the language being read. The overlay never takes keyboard
+  focus, so the selection in the app you read from stays intact. ⌥⇧[ and ⌥⇧]
+  (new defaults) change the speed the readout shows; the overlay itself is
+  bound to no key by default but can be given one in Settings → Shortcuts.
   - The word cursor is estimated, not measured: neither backend returns word
     timings, and cached audio has none to return. Each word is weighted by its
     length and the pause its punctuation buys, and the estimate is re-anchored
@@ -26,6 +25,22 @@
     synthesizer — so what you read is what you hear, with LaTeX spoken out and
     PDF line breaks repaired. It holds that text only while the read is in
     progress and drops it on stop.
+
+- Normalization now follows the language of the read instead of always injecting
+  English words into it. The words the normalizer spells out come from a
+  per-language table: percent forms ("50 %" → "50 prosent", "12 wt %" →
+  "12 vektprosent", LaTeX `\%`), the abbreviation table (`f.eks.` → "for
+  eksempel", plus `dvs.`, `jf.`, `ca.`, `osv.` and Norwegian readings of the
+  Latin forms), and the logic connectives (∧ ∨ ¬ → "og", "eller", "ikke"). The
+  language is the one the read was started with, so there is no new setting;
+  English output is byte-identical to before.
+
+- Added `make update` for routine updates of an installed sr.app: pull, rebuild,
+  swap the bundle in place, relaunch. It quits sr the way the Quit menu item
+  does, so `applicationShouldTerminate` runs and pending ElevenLabs history
+  deletions are persisted and the local daemon stopped — `make install`
+  previously `pkill`ed the app, skipping that shutdown work entirely, which is
+  now fixed there too.
 
 - Reading is now per language, and only Norwegian or English. Each language has
   its own hotkey, voice and model, and the language is pinned on the ElevenLabs
