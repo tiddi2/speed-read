@@ -30,6 +30,20 @@ public enum KeychainStore {
         return key
     }
 
+    /// Saving replaces the item instead of updating it in place.
+    ///
+    /// A keychain item's ACL is fixed when the item is created, and names the
+    /// app that created it. An item written by an earlier ad-hoc build — whose
+    /// code identity was the binary's own hash, and so different every build —
+    /// or by `security add-generic-password`, names an app this one is not, and
+    /// macOS answers that with a password prompt on every single read. Writing
+    /// the item afresh puts the running app in the ACL, so one "Always Allow"
+    /// holds for good (the app's identity is stable now: see
+    /// `scripts/setup-signing.sh`).
+    ///
+    /// Delete-then-add is safe in that order. If the delete is refused the old
+    /// item survives untouched and the save reports failure, so a key is never
+    /// lost to a half-completed replacement.
     @discardableResult
     public static func saveAPIKey(_ key: String) -> Bool {
         let data = Data(key.utf8)
@@ -38,16 +52,12 @@ public enum KeychainStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        // Try update first, then add.
-        let update: [String: Any] = [kSecValueData as String: data]
-        var status = SecItemUpdate(base as CFDictionary, update as CFDictionary)
-        if status == errSecItemNotFound {
-            var add = base
-            add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
-            status = SecItemAdd(add as CFDictionary, nil)
-        }
-        return status == errSecSuccess
+        let deletion = SecItemDelete(base as CFDictionary)
+        guard deletion == errSecSuccess || deletion == errSecItemNotFound else { return false }
+        var add = base
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
 
     @discardableResult

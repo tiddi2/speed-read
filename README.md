@@ -37,7 +37,7 @@ make install        # builds sr.app and installs it to /Applications
 
 Then, one-time setup:
 
-1. **Grant Accessibility** when prompted (System Settings → Privacy & Security → Accessibility → enable **sr**). This is what lets sr read your selection; the hotkey itself works without it.
+1. **Grant Accessibility** when prompted (System Settings → Privacy & Security → Accessibility → enable **sr**). This is what lets sr read your selection; the hotkey itself works without it. You are asked once: sr is signed with a stable local identity, so the grant survives later `make update`s. (If an old ad-hoc build left a dead **sr** row behind and capture stays broken, `make reset-permissions` clears them and re-asks.)
 2. **Add your ElevenLabs key**: menu bar → waveform icon → Settings… → Cost → paste key → Save. It is stored only in the macOS Keychain. Recommended: create a dedicated key scoped to *Text-to-Speech + User Read*, and opt out of training under ElevenLabs → Terms & Privacy → Data Use.
 3. *(Optional, for offline use)* click **Install Local Voice (Kokoro, ~330 MB)** in Settings → General. The Python version and full dependency closure are pinned and hash-verified; the model revision and behavior-defining files are checksum-verified too.
 4. *(Optional)* System Settings → General → Login Items → **+** → `/Applications/sr.app` to start at login.
@@ -146,6 +146,11 @@ security delete-generic-password -a elevenlabs -s "sr — ElevenLabs API Key"
 defaults delete com.patrickellis.sr
 ```
 
+```sh
+bash scripts/setup-signing.sh --remove   # from the checkout: drops the sr-dev
+                                         # keychain and its stored password
+```
+
 Then remove **sr** from System Settings → Privacy & Security → Accessibility.
 
 ## Development
@@ -157,6 +162,10 @@ make app       # release build → dist/sr.app (locally signed)
 make run       # build + launch from dist/
 make install   # first install: build + replace /Applications/sr.app
 make update    # routine update: pull + build + swap the bundle + relaunch
+
+make setup-signing      # create the local signing identity (automatic; see below)
+make signing-status     # check that identity still signs
+make reset-permissions  # clear sr's stale Accessibility grants, then re-approve once
 ```
 
 `make update` is the everyday command once sr is installed. It quits sr the way
@@ -170,9 +179,64 @@ budget and backend mode live in UserDefaults (`com.patrickellis.sr`), the API ke
 lives in the login Keychain, and the audio cache and local voice live in
 `~/Library/Application Support/sr` — none of which are inside `sr.app`.
 
-Two toolchain notes:
+### Why permissions used to reset on every update
 
-- **Signing / Keychain / Accessibility across rebuilds**: without a codesigning identity, builds are ad-hoc signed, which means *every build has a different identity*. macOS keys both the Accessibility grant and the Keychain ACL on that identity, so each rebuild looks like a brand-new app: the grant is forgotten and you are asked for your Keychain password again. This is not caused by reinstalling — an in-place update re-prompts just the same. The fix is a stable identity: create a self-signed code-signing certificate named `sr-dev` (Keychain Access → Certificate Assistant → Create a Certificate… → type *Code Signing*) and `build-app.sh` picks it up automatically, after which both stick across rebuilds.
+macOS keys the Accessibility (TCC) grant and the Keychain item's ACL on an app's
+*code signature*, not on its path or bundle id alone. With no signing
+certificate on the machine, `codesign` signs **ad-hoc** — and an ad-hoc
+identity is the binary's own hash. Every rebuild therefore produced a different
+identity, so each update looked like a brand-new app: the Accessibility grant
+was forgotten (leaving a dead `sr` row in System Settings that looks enabled but
+grants nothing) and the Keychain asked for your password again. Reinstalling was
+never the cause; an in-place `make update` re-prompted just the same.
+
+The fix is a stable identity, and `scripts/setup-signing.sh` now makes one
+automatically. The first `make app` / `make install` / `make update` after this
+change creates a self-signed `sr-dev` code-signing certificate and signs the
+bundle with it, which pins the designated requirement to
+
+```
+identifier "com.patrickellis.sr" and certificate leaf = H"…"
+```
+
+That requirement does not change when the binary does, so the grant survives
+every later rebuild. Approve sr once and it stays approved.
+
+Coming from an older build, clear the dead entries once:
+
+```sh
+make setup-signing      # create the identity (or let `make update` do it)
+make reset-permissions  # drop the stale TCC rows, relaunch sr, approve once
+```
+
+The first launch after that also asks for the Keychain once, because the API
+key's ACL still lists the old ad-hoc identities. Choose **Always Allow** — with
+a stable identity that answer sticks, instead of being invalidated by the next
+build. If it somehow keeps asking, the item predates this app entirely (an
+ad-hoc build, or `security add-generic-password`, created it and an item's ACL
+is fixed at creation): paste the key again in Settings → Cost → Save, which now
+writes a fresh item owned by the running app.
+
+**Where the key lives.** The certificate's private key is kept in its own
+keychain (`~/Library/Keychains/sr-dev.keychain-db`), whose password is generated
+at setup and stored in `~/.config/sr/sr-dev-keychain-password` (mode 600). That
+is what lets a build sign without asking for your login password every time. The
+trade-off is real and worth stating: anything that can run as you can read that
+password and sign code as `sr-dev` — including code that would then inherit
+sr's Accessibility grant. The key means nothing on any other Mac, and signs
+nothing but your own local builds.
+
+Prefer no password on disk? Keep an `sr-dev` certificate in your **login**
+keychain instead (Keychain Access → Certificate Assistant → Create a
+Certificate… → type *Code Signing*); `setup-signing.sh` finds and uses an
+existing `sr-dev` identity rather than minting a second one. macOS then guards
+the key with the login keychain's own lock, at the cost of a password prompt
+when a build signs — `scripts/setup-signing.sh --fix-prompts` grants `codesign`
+standing permission and ends the prompts, and `--remove` deletes the managed
+keychain and its password file.
+
+One toolchain note:
+
 - **`make test` targets a Command-Line-Tools-only toolchain** (it wires the Swift Testing framework paths manually). With full Xcode installed, plain `swift test` should also work.
 
 The app icon is generated rather than checked in as images: `python3 scripts/make-icon.py`

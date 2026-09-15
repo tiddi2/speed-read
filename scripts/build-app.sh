@@ -1,7 +1,9 @@
 #!/bin/bash
 # Assemble sr.app from the SwiftPM release build.
-# Pure-SwiftPM workflow — no Xcode project. Signing/notarization is Phase 3;
-# until then the bundle is ad-hoc signed so TCC (Accessibility) grants stick.
+# Pure-SwiftPM workflow — no Xcode project. Distribution signing/notarization is
+# Phase 3; until then the bundle is signed with the local "sr-dev" identity that
+# scripts/setup-signing.sh maintains, which is what makes the Accessibility grant
+# and the Keychain ACL survive a rebuild.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -20,7 +22,8 @@ cp "$BIN" "$BUNDLE_DIR/Contents/MacOS/sr"
 # KeyboardShortcuts ships a resource bundle SwiftPM places next to the binary.
 BIN_DIR="$(dirname "$BIN")"
 for res in "$BIN_DIR"/*.bundle; do
-  [ -e "$res" ] && cp -R "$res" "$BUNDLE_DIR/Contents/Resources/"
+  [ -e "$res" ] || continue
+  cp -R "$res" "$BUNDLE_DIR/Contents/Resources/"
 done
 
 # Kokoro daemon script — installed into App Support by the in-app installer.
@@ -51,16 +54,54 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Sign with the local "sr-dev" certificate when present: unlike ad-hoc
-# signing (whose identity is the per-build binary hash), a real certificate
-# gives a stable designated requirement, so the Accessibility grant survives
-# rebuilds. Falls back to ad-hoc if the cert is missing (grant re-prompts
-# after every rebuild in that case). Phase 3 replaces this with Developer ID.
-if security find-identity -v -p codesigning 2>/dev/null | grep -q '"sr-dev"'; then
-  codesign --force --deep --sign "sr-dev" "$BUNDLE_DIR"
-else
-  echo "warning: sr-dev cert not found — ad-hoc signing (TCC grants won't survive rebuilds)" >&2
-  codesign --force --deep --sign - "$BUNDLE_DIR"
+# Sign with the local "sr-dev" identity. An ad-hoc signature's identity is the
+# binary's own hash, so it changes with every build and macOS forgets both the
+# Accessibility grant and the Keychain ACL each time; a certificate gives a
+# designated requirement that stays put. setup-signing.sh creates the identity
+# on first build and is a no-op afterwards — set SR_SKIP_SIGNING_SETUP=1 to
+# build without it (ad-hoc, grants reset on every rebuild).
+SIGN_IDENTITY=""
+SIGN_KEYCHAIN=""
+if [ "${SR_SKIP_SIGNING_SETUP:-0}" != "1" ]; then
+  if signing_env="$(bash scripts/setup-signing.sh --print-env)"; then
+    eval "$signing_env"
+    SIGN_IDENTITY="${SR_SIGN_IDENTITY:-}"
+    SIGN_KEYCHAIN="${SR_SIGN_KEYCHAIN:-}"
+  fi
 fi
 
+if [ -z "$SIGN_IDENTITY" ]; then
+  echo "warning: no sr-dev identity — ad-hoc signing (Accessibility and Keychain" >&2
+  echo "         grants will reset on every rebuild). Fix: make setup-signing" >&2
+fi
+
+# --timestamp=none keeps the build offline; a local certificate cannot be
+# timestamped by Apple's service anyway.
+sign() {
+  local target="$1"; shift
+  if [ -n "$SIGN_IDENTITY" ]; then
+    local keychain_arg=()
+    [ -n "$SIGN_KEYCHAIN" ] && keychain_arg=(--keychain "$SIGN_KEYCHAIN")
+    codesign --force --timestamp=none \
+      ${keychain_arg[@]+"${keychain_arg[@]}"} --sign "$SIGN_IDENTITY" "$@" "$target"
+  else
+    codesign --force --timestamp=none --sign - "$@" "$target"
+  fi
+}
+
+# Inside out rather than --deep, which is deprecated and re-signs nested code
+# with the outer bundle's options.
+for res in "$BUNDLE_DIR"/Contents/Resources/*.bundle; do
+  [ -e "$res" ] || continue
+  sign "$res"
+done
+sign "$BUNDLE_DIR" --identifier "com.patrickellis.sr"
+codesign --verify --strict "$BUNDLE_DIR"
+
+# The designated requirement is the identity TCC and the Keychain remember. It
+# is worth seeing: if it changes between builds, the grants are about to reset.
+DR="$(codesign -d -r- "$BUNDLE_DIR" 2>/dev/null | sed -n 's/^designated => //p')"
+
 echo "Built $BUNDLE_DIR"
+echo "  identity: ${SIGN_IDENTITY:-ad-hoc}"
+echo "  designated requirement: ${DR:-unknown}"
