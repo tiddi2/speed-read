@@ -11,18 +11,18 @@ import SRCore
 ///   sr --speak-clipboard         speak the clipboard (honors concealed-
 ///                                content refusal; exit 2 when refused)
 ///
-/// Flags: --local forces the Kokoro route; --language picks the language
-/// the text is normalized (and so read) in.
+/// Flags: --local forces the Kokoro route; --lang picks the language profile
+/// (voice, model and the language pinned on the request). Like the GUI, the
+/// CLI never detects the language from the text — an unspecified --lang means
+/// English, not "whatever the model thinks".
 @MainActor
 enum HeadlessCLI {
     enum Mode {
         case installKokoro
-        /// `language` is nil when the invocation did not ask for one; the
-        /// saved preference is resolved at read time, not at parse time.
-        case speak(source: String, forceLocal: Bool, overrideCostControls: Bool,
-                   language: SpeechLanguage?)
-        case speakClipboard(forceLocal: Bool, overrideCostControls: Bool,
-                            language: SpeechLanguage?)
+        case speak(source: String, language: SpeechLanguage,
+                   forceLocal: Bool, overrideCostControls: Bool)
+        case speakClipboard(language: SpeechLanguage,
+                            forceLocal: Bool, overrideCostControls: Bool)
         case usage(error: String?)   // --help, or unrecognized/malformed args
 
         /// nil = no arguments at all → launch the GUI. Anything else is a CLI
@@ -38,9 +38,9 @@ enum HeadlessCLI {
             }
             var command: String?
             var source: String?
+            var language: SpeechLanguage?
             var forceLocal = false
             var overrideCostControls = false
-            var language: SpeechLanguage?
             var index = 0
             while index < args.count {
                 let argument = args[index]
@@ -49,15 +49,20 @@ enum HeadlessCLI {
                     forceLocal = true
                 case "--override-cost-controls":
                     overrideCostControls = true
-                case "--language":
-                    guard index + 1 < args.count,
-                          let requested = SpeechLanguage(rawValue: args[index + 1]) else {
-                        self = .usage(error: "--language requires one of: "
-                            + SpeechLanguage.allCases.map(\.rawValue).joined(separator: ", "))
+                case "--lang":
+                    guard language == nil else {
+                        self = .usage(error: "--lang given more than once")
                         return
                     }
+                    guard index + 1 < args.count,
+                          let parsed = SpeechLanguage(rawValue: args[index + 1]) else {
+                        let codes = SpeechLanguage.allCases.map(\.rawValue)
+                            .joined(separator: "|")
+                        self = .usage(error: "--lang requires one of: \(codes)")
+                        return
+                    }
+                    language = parsed
                     index += 1
-                    language = requested
                 case "--speak", "--speak-clipboard", "--install-kokoro":
                     guard command == nil else {
                         self = .usage(error: "choose exactly one command")
@@ -86,13 +91,13 @@ enum HeadlessCLI {
                 }
                 self = .installKokoro
             } else if command == "--speak", let source {
-                self = .speak(source: source, forceLocal: forceLocal,
-                              overrideCostControls: overrideCostControls,
-                              language: language)
+                self = .speak(source: source, language: language ?? .english,
+                              forceLocal: forceLocal,
+                              overrideCostControls: overrideCostControls)
             } else if command == "--speak-clipboard" {
-                self = .speakClipboard(forceLocal: forceLocal,
-                                       overrideCostControls: overrideCostControls,
-                                       language: language)
+                self = .speakClipboard(language: language ?? .english,
+                                       forceLocal: forceLocal,
+                                       overrideCostControls: overrideCostControls)
             } else {
                 self = .usage(error: "a command is required")
             }
@@ -100,13 +105,13 @@ enum HeadlessCLI {
     }
 
     private static let usageText = """
-    usage: sr [--speak <file|-> | --speak-clipboard | --install-kokoro] [--local] [--language <en|nb>] [--override-cost-controls]
+    usage: sr [--speak <file|-> | --speak-clipboard | --install-kokoro] [--lang en|no] [--local] [--override-cost-controls]
       --speak <file|->    speak a file (or stdin) through the full pipeline
       --speak-clipboard   speak the clipboard (exit 2 on concealed content)
       --install-kokoro    install the local voice
+      --lang en|no        language profile to read in (default: en); pins the
+                          language on the request instead of detecting it
       --local             force the local (Kokoro) route
-      --language <en|nb>  language to normalize and read in
-                          (default: the saved preference)
       --override-cost-controls
                           allow a cloud read past budget/large-read gates
     Run with no arguments to launch the menu-bar app.
@@ -123,7 +128,7 @@ enum HeadlessCLI {
             return 0
         case .installKokoro:
             return await installKokoro()
-        case .speak(let source, let forceLocal, let overrideCostControls, let language):
+        case .speak(let source, let language, let forceLocal, let overrideCostControls):
             guard let text = readText(source) else {
                 FileHandle.standardError.write(Data("cannot read \(source)\n".utf8))
                 return 1
@@ -133,7 +138,7 @@ enum HeadlessCLI {
                 language: language,
                 forceLocal: forceLocal,
                 overrideCostControls: overrideCostControls)
-        case .speakClipboard(let forceLocal, let overrideCostControls, let language):
+        case .speakClipboard(let language, let forceLocal, let overrideCostControls):
             switch SelectionCapture.clipboardText() {
             case .concealed:
                 print("CONCEALED-REFUSED")
@@ -217,7 +222,7 @@ enum HeadlessCLI {
 
     private static func speak(
         _ text: String,
-        language: SpeechLanguage?,
+        language: SpeechLanguage,
         forceLocal: Bool,
         overrideCostControls: Bool
     ) async -> Int32 {
@@ -230,7 +235,7 @@ enum HeadlessCLI {
             print("input too large (maximum \(Chunker.maxReadCharacters) characters)")
             return 1
         }
-        let normalized = Normalizer.normalize(text, language: language ?? settings.speechLanguage)
+        let normalized = Normalizer.normalize(text, language: language)
         guard normalized.count <= Chunker.maxReadCharacters else {
             print("input too large (maximum \(Chunker.maxReadCharacters) characters)")
             return 1
@@ -240,7 +245,7 @@ enum HeadlessCLI {
             print("nothing to speak")
             return 1
         }
-        print("sentences=\(chunks.count) chars=\(normalized.count)")
+        print("sentences=\(chunks.count) chars=\(normalized.count) lang=\(language.rawValue)")
 
         AudioCache.shared.enabled = settings.cacheEnabled
         let playback = PlaybackEngine(rate: settings.playbackRate,
@@ -250,14 +255,24 @@ enum HeadlessCLI {
         let ledger = CostLedger()
         let deleteHistory = settings.autoDeleteHistory
 
+        let model = settings.modelID(for: language)
         let cloud = SynthesisPipeline.Route(
-            provider: ElevenLabsProvider(modelID: settings.modelID),
-            voiceID: settings.voiceID, modelID: settings.modelID)
-        let local: SynthesisPipeline.Route? = KokoroRuntime.shared.isInstalled
-            ? SynthesisPipeline.Route(provider: KokoroProvider(),
-                                      voiceID: settings.localVoiceID,
-                                      modelID: KokoroProvider.cacheModelID)
-            : nil
+            provider: ElevenLabsProvider(modelID: model, language: language),
+            voiceID: settings.voiceID(for: language),
+            modelID: model,
+            languageCode: ElevenLabsProvider.lockedLanguageCode(
+                for: language, modelID: model) ?? "")
+        // Same rule as the GUI: a language the local model cannot speak gets
+        // no local route at all, rather than an English voice reading it.
+        var local: SynthesisPipeline.Route?
+        if KokoroRuntime.shared.isInstalled,
+           let localVoice = settings.localVoiceID(for: language) {
+            local = SynthesisPipeline.Route(
+                provider: KokoroProvider(language: language),
+                voiceID: localVoice,
+                modelID: KokoroProvider.cacheModelID,
+                languageCode: language.rawValue)
+        }
 
         let routePlan = BackendRouting.plan(
             mode: settings.backendMode,
@@ -265,7 +280,9 @@ enum HeadlessCLI {
             localAvailable: local != nil,
             hasCloudCredential: KeychainStore.readAPIKey() != nil)
         if routePlan == .localUnavailable {
-            print("local voice not installed")
+            print(language.isSpeakableLocally
+                  ? "local voice not installed"
+                  : "no offline \(language.displayName) voice — this language is cloud-only")
             return 1
         }
         let primary: SynthesisPipeline.Route

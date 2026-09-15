@@ -4,7 +4,7 @@ import Testing
 /// Language-aware normalization: a Norwegian read must not have English
 /// words injected into it.
 ///
-/// Fixtures live in fixtures-nb/NN-name.in.txt with expected output in
+/// Fixtures live in fixtures-no/NN-name.in.txt with expected output in
 /// NN-name.out.txt. Unlike the English fixtures these are not golden files
 /// from the reference implementation — Speak11 has no Norwegian mode — so
 /// they encode sr's own behaviour.

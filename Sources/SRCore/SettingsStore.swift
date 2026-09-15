@@ -10,8 +10,21 @@ public struct SettingsStore {
     }
 
     private enum Key {
-        static let voiceID = "voiceID"
-        static let modelID = "modelID"
+        /// Pre-language-profile keys, still read as the seed for English (and
+        /// as the voice seed for every language — an ElevenLabs voice is not
+        /// language-specific). Never written to any more.
+        static let legacyVoiceID = "voiceID"
+        static let legacyModelID = "modelID"
+        static let legacyLocalVoiceID = "localVoiceID"
+        static func voiceID(_ language: SpeechLanguage) -> String {
+            "voiceID.\(language.rawValue)"
+        }
+        static func modelID(_ language: SpeechLanguage) -> String {
+            "modelID.\(language.rawValue)"
+        }
+        static func localVoiceID(_ language: SpeechLanguage) -> String {
+            "localVoiceID.\(language.rawValue)"
+        }
         static let playbackRate = "playbackRate"
         static let sentencePauseMS = "sentencePauseMS"
         static let stability = "stability"
@@ -21,8 +34,6 @@ public struct SettingsStore {
         static let autoDeleteHistory = "autoDeleteHistory"
         static let cacheEnabled = "cacheEnabled"
         static let backendMode = "backendMode"
-        static let localVoiceID = "localVoiceID"
-        static let speechLanguage = "speechLanguage"
     }
 
     /// Backend modes (F-3): Auto = cloud with local fallback.
@@ -30,14 +41,55 @@ public struct SettingsStore {
         case auto, cloud, local
     }
 
-    public var voiceID: String {
-        get { defaults.string(forKey: Key.voiceID) ?? ElevenLabsProvider.presetVoices[0].id }
-        nonmutating set { defaults.set(newValue, forKey: Key.voiceID) }
+    // MARK: - Per-language voice profiles
+
+    /// Cloud voice for `language`. Falls through to the pre-profile key so an
+    /// existing voice choice is inherited rather than reset.
+    public func voiceID(for language: SpeechLanguage) -> String {
+        defaults.string(forKey: Key.voiceID(language))
+            ?? defaults.string(forKey: Key.legacyVoiceID)
+            ?? ElevenLabsProvider.presetVoices[0].id
     }
 
-    public var modelID: String {
-        get { defaults.string(forKey: Key.modelID) ?? ElevenLabsProvider.defaultModelID }
-        nonmutating set { defaults.set(newValue, forKey: Key.modelID) }
+    public func setVoiceID(_ voiceID: String, for language: SpeechLanguage) {
+        defaults.set(voiceID, forKey: Key.voiceID(language))
+    }
+
+    /// Cloud model for `language`. Defaults (and downgrades an inherited
+    /// choice) to a model that accepts `language_code`: a model that cannot be
+    /// pinned to a language would detect it from the text instead, which is
+    /// the one thing language profiles exist to prevent.
+    public func modelID(for language: SpeechLanguage) -> String {
+        if let stored = defaults.string(forKey: Key.modelID(language)) {
+            return stored
+        }
+        if let legacy = defaults.string(forKey: Key.legacyModelID),
+           ElevenLabsProvider.supportsLanguageLock(legacy) {
+            return legacy
+        }
+        return ElevenLabsProvider.defaultModelID
+    }
+
+    public func setModelID(_ modelID: String, for language: SpeechLanguage) {
+        defaults.set(modelID, forKey: Key.modelID(language))
+    }
+
+    /// Local (Kokoro) voice for `language`, or nil when the local model has no
+    /// voices for it (Norwegian). A stored voice from another language is
+    /// ignored rather than used.
+    public func localVoiceID(for language: SpeechLanguage) -> String? {
+        let candidates = [
+            defaults.string(forKey: Key.localVoiceID(language)),
+            defaults.string(forKey: Key.legacyLocalVoiceID),
+        ]
+        for candidate in candidates {
+            if let candidate, language.ownsLocalVoice(candidate) { return candidate }
+        }
+        return KokoroProvider.presetVoices(for: language).first?.id
+    }
+
+    public func setLocalVoiceID(_ voiceID: String, for language: SpeechLanguage) {
+        defaults.set(voiceID, forKey: Key.localVoiceID(language))
     }
 
     /// Client-side playback rate, 0.5–3.0 (F-8).
@@ -82,20 +134,6 @@ public struct SettingsStore {
             BackendMode(rawValue: defaults.string(forKey: Key.backendMode) ?? "") ?? .auto
         }
         nonmutating set { defaults.set(newValue.rawValue, forKey: Key.backendMode) }
-    }
-
-    public var localVoiceID: String {
-        get { defaults.string(forKey: Key.localVoiceID) ?? "bf_lily" }
-        nonmutating set { defaults.set(newValue, forKey: Key.localVoiceID) }
-    }
-
-    /// Language a read is spoken in; selects the normalizer's lexicon (F-4).
-    public var speechLanguage: SpeechLanguage {
-        get {
-            SpeechLanguage(rawValue: defaults.string(forKey: Key.speechLanguage) ?? "")
-                ?? .english
-        }
-        nonmutating set { defaults.set(newValue.rawValue, forKey: Key.speechLanguage) }
     }
 
     public var voiceSettings: VoiceSettings {

@@ -197,6 +197,23 @@ private final class LockedTestFlag: @unchecked Sendable {
         #expect(a.count == 64)
     }
 
+    /// The same sentence read as Norwegian and as English is different audio;
+    /// sharing one entry would replay the wrong pronunciation.
+    @Test func keySeparatesLanguages() {
+        let auto = AudioCache.key(text: "hei", provider: "elevenlabs",
+                                  voiceID: "v1", modelID: "m1",
+                                  settings: VoiceSettings())
+        let norwegian = AudioCache.key(text: "hei", provider: "elevenlabs",
+                                       voiceID: "v1", modelID: "m1",
+                                       languageCode: "no", settings: VoiceSettings())
+        let english = AudioCache.key(text: "hei", provider: "elevenlabs",
+                                     voiceID: "v1", modelID: "m1",
+                                     languageCode: "en", settings: VoiceSettings())
+        #expect(norwegian != english)
+        #expect(norwegian != auto)
+        #expect(english != auto)
+    }
+
     @Test func storeIsImmediatelyVisible() {
         let cache = freshCache()
         let key = AudioCache.key(text: "t", provider: "p", voiceID: "v",

@@ -10,7 +10,8 @@ PRD: see conversation / repo root. Reference implementation: [Speak11](https://g
 | Q-2 macOS floor | 14+ (dev machine runs macOS 26.5; no constraint) |
 | Q-3 Hotkey dep | `sindresorhus/KeyboardShortcuts` (1 of 2 SPM budget) |
 | Q-4 History-ID | **Live-verified 2026-07-06**: streaming TTS response carries `history-item-id` header (also `character-cost` — use it for exact C-1/C-2 accounting instead of estimating). `DELETE /v1/history/{id}` returns 200 `{"status":"ok"}`; history confirmed empty afterwards. Header-first, list-fallback. |
-| Q-5 Pause semantics | Primary hotkey ⌥⇧/ = speak/stop; secondary ⌥⇧. = pause/resume (per PRD F-2, revisit after use) |
+| Q-5 Pause semantics | Superseded: reading is per language, so the single speak hotkey became one per language (⌥A English, ⌥⇧A Norwegian) and every hotkey is rebindable in Settings → Shortcuts. ⌥⇧. stays pause/resume, flanked by ⌥⇧, / ⌥⇧/ for previous/next sentence. Re-pressing a speak hotkey replaces the read; stopping is the menu's or a bound Stop hotkey's job. |
+| Q-7 Languages | Norwegian + English only, never auto-detected: the language is chosen by which hotkey you press and pinned as ElevenLabs `language_code`, which only Flash v2.5 / Turbo v2.5 accept. Kokoro has no Norwegian, so Norwegian is cloud-only and never falls back locally. |
 | Q-6 Public release | Undecided; keeping CHANGELOG from day one, code written for strangers |
 | Build toolchain | Pure SwiftPM + `scripts/build-app.sh` assembling `sr.app` (only CLT installed, no Xcode — works; signing/notarization deferred to Phase 3) |
 
@@ -72,7 +73,7 @@ Resolved in the 2026-07-09 audit-fix pass:
   the parity fixtures stay byte-identical. `NormalizerLexicon` holds the words
   each language injects; Norwegian overrides the percent forms (bare `%`, the
   `wt/vol/at/mol` compounds, LaTeX `\%`), the abbreviation table, and the logic
-  connectives (∧ ∨ ¬). Fixtures for it live in `Tests/SRCoreTests/fixtures-nb/`.
+  connectives (∧ ∨ ¬). Fixtures for it live in `Tests/SRCoreTests/fixtures-no/`.
   Still English in a Norwegian read, in rough order of how often they show up:
   `Fig./Eq./Ref./No.` expansion, range words ("Figures 1 through 3", "1 to 5"),
   currency names, bare-URL "dot"/"slash", SI unit names, Greek letter names, and

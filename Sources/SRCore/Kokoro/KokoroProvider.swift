@@ -54,15 +54,30 @@ public struct KokoroProvider: TTSProvider {
         Voice(id: "bm_george", name: "George — British, deep"),
     ]
 
-    private let runtime: KokoroRuntime
-
-    public init(runtime: KokoroRuntime = .shared) {
-        self.runtime = runtime
+    /// Voices for `language`, empty when the local model cannot speak it.
+    public static func presetVoices(for language: SpeechLanguage) -> [Voice] {
+        presetVoices.filter { language.ownsLocalVoice($0.id) }
     }
 
-    public func voices() async throws -> [Voice] { Self.presetVoices }
+    private let runtime: KokoroRuntime
+    /// The language this route was built for. Kokoro has no Norwegian, so a
+    /// mismatch is refused rather than read aloud in English (see
+    /// SpeechLanguage) — routing should never build such a route, this is the
+    /// backstop that makes it impossible.
+    private let language: SpeechLanguage
+
+    public init(runtime: KokoroRuntime = .shared, language: SpeechLanguage = .english) {
+        self.runtime = runtime
+        self.language = language
+    }
+
+    public func voices() async throws -> [Voice] { Self.presetVoices(for: language) }
 
     public func synthesize(text: String, voiceID: String, settings: VoiceSettings) async throws -> SynthesisResult {
+        guard language.ownsLocalVoice(voiceID) else {
+            SRLog.error("kokoro.language", ["lang": language.rawValue])
+            throw TTSError.network(underlying: "kokoro: language not installed")
+        }
         do {
             try await runtime.supervisor.ensureRunning()
         } catch let error as KokoroDaemonSupervisor.SupervisorError {

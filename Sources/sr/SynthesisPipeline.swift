@@ -28,6 +28,17 @@ final class SynthesisPipeline: @unchecked Sendable {
         let voiceID: String
         /// Modeled for cache keying; "" for providers without models.
         let modelID: String
+        /// Language actually pinned on the request, for cache keying; "" when
+        /// the provider was left to detect it from the text.
+        let languageCode: String
+
+        init(provider: any TTSProvider, voiceID: String, modelID: String,
+             languageCode: String = "") {
+            self.provider = provider
+            self.voiceID = voiceID
+            self.modelID = modelID
+            self.languageCode = languageCode
+        }
     }
 
     struct Callbacks: Sendable {
@@ -62,6 +73,7 @@ final class SynthesisPipeline: @unchecked Sendable {
         @Sendable func cacheKey(_ route: Route, _ chunk: Chunk) -> String {
             AudioCache.key(text: chunk.text, provider: route.provider.id,
                            voiceID: route.voiceID, modelID: route.modelID,
+                           languageCode: route.languageCode,
                            settings: settings)
         }
 

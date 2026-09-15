@@ -12,6 +12,11 @@ import Testing
         ["--install-kokoro", "--speak-clipboard"],
         ["--install-kokoro", "--local"],
         ["--local"],
+        ["--speak", "article.md", "--lang"],
+        ["--speak", "article.md", "--lang", "de"],
+        ["--speak", "article.md", "--lang", "en", "--lang", "no"],
+        ["--install-kokoro", "--lang", "en"],
+        ["--lang", "no"],
     ])
     func rejectsAmbiguousOrUnknownArguments(_ args: [String]) {
         guard case .usage(let error) = HeadlessCLI.Mode(arguments: ["sr"] + args) else {
@@ -30,48 +35,32 @@ import Testing
         #expect(error == nil)
     }
 
-    @Test(arguments: [
-        ["--speak", "article.md", "--language"],
-        ["--speak", "article.md", "--language", "klingon"],
-        ["--speak-clipboard", "--language", "norwegian"],
-        ["--install-kokoro", "--language", "nb"],
-    ])
-    func rejectsMalformedLanguageArguments(_ args: [String]) {
-        guard case .usage(let error) = HeadlessCLI.Mode(arguments: ["sr"] + args) else {
-            Issue.record("unsafe arguments accepted: \(args)")
-            return
-        }
-        #expect(error != nil)
-    }
-
-    @Test func parsesReadingLanguage() {
-        guard case .speak(_, _, _, let language) = HeadlessCLI.Mode(
-            arguments: ["sr", "--speak", "artikkel.md", "--language", "nb"]) else {
-            Issue.record("valid --language invocation rejected")
-            return
-        }
-        #expect(language == .norwegian)
-    }
-
-    /// No --language means "use the saved preference", which the read
-    /// resolves — the parser must not substitute a default of its own.
-    @Test func languageIsUnsetWhenNotRequested() {
-        guard case .speakClipboard(_, _, let language) = HeadlessCLI.Mode(
-            arguments: ["sr", "--speak-clipboard"]) else {
-            Issue.record("valid clipboard invocation rejected")
-            return
-        }
-        #expect(language == nil)
-    }
-
     @Test func acceptsFlagsBeforeCommandAndStdin() {
-        guard case .speak(let source, let local, let override, _) = HeadlessCLI.Mode(
+        guard case .speak(let source, let language, let local, let override) = HeadlessCLI.Mode(
             arguments: ["sr", "--local", "--speak", "-", "--override-cost-controls"]) else {
             Issue.record("valid stdin invocation rejected")
             return
         }
         #expect(source == "-")
+        #expect(language == .english)
         #expect(local)
         #expect(override)
+    }
+
+    @Test(arguments: [SpeechLanguage.english, SpeechLanguage.norwegian])
+    func languageFlagSelectsTheProfile(_ expected: SpeechLanguage) {
+        guard case .speak(_, let language, _, _) = HeadlessCLI.Mode(
+            arguments: ["sr", "--speak", "article.md", "--lang", expected.rawValue]) else {
+            Issue.record("valid --lang invocation rejected")
+            return
+        }
+        #expect(language == expected)
+
+        guard case .speakClipboard(let clipboardLanguage, _, _) = HeadlessCLI.Mode(
+            arguments: ["sr", "--lang", expected.rawValue, "--speak-clipboard"]) else {
+            Issue.record("valid --lang clipboard invocation rejected")
+            return
+        }
+        #expect(clipboardLanguage == expected)
     }
 }

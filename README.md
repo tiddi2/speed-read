@@ -6,10 +6,12 @@ sr is a privacy-first text-to-speech utility for macOS. It lives in your menu ba
 
 ## Features
 
-- **Read anything, anywhere** — global hotkey (default ⌥⇧/) speaks the current selection in Safari, Chrome, Preview PDFs, VS Code, Slack, Mail, Terminal. Accessibility-API capture first; clipboard fallback restores your clipboard byte-for-byte.
+- **Read anything, anywhere** — a global hotkey per language (default ⌥A English, ⌥⇧A Norwegian) speaks the current selection in Safari, Chrome, Preview PDFs, VS Code, Slack, Mail, Terminal. Accessibility-API capture first; clipboard fallback restores your clipboard byte-for-byte.
+- **One language per hotkey, never a third** — each language has its own voice and model, and the language is pinned on the request (`language_code`) instead of being detected from the text. Norwegian is cloud-only: the offline voice has no Norwegian, so it is never substituted.
+- **Fully rebindable** — every hotkey (speak, clipboard, pause, stop, ±sentence, ±5 s, restart, speed) is configurable in Settings → Shortcuts.
 - **Top-tier voices** — ElevenLabs (Flash v2.5 / Turbo / Multilingual v2 / v3) with your account's full voice list, or the local Kokoro model (free, offline, Apple Silicon).
 - **Instant, pitch-perfect speed** — 0.5×–3.0× applied client-side with time-domain (WSOLA) stretching. Changing speed never re-generates audio and never costs credits.
-- **Full transport** — play/pause, ±5 s seek, restart, stop, live progress, from the menu bar panel.
+- **Full transport** — play/pause, ±1 sentence, ±5 s seek, restart, stop, live progress, from the menu bar panel or the keyboard.
 - **Smart text cleanup** — PDF line-break repair, LaTeX math to spoken English, Markdown stripping, citations, units, URLs — ported from [Speak11](https://github.com/smcantab/speak11) and parity-tested.
 - **Cache-first** — repeated reads are instant and free (content-addressed local cache, size-capped, purgeable, disableable, with burst writes coalesced into one maintenance sweep).
 - **Bounded read-ahead** — prepares only the current sentence plus five ahead; pausing prevents new requests and stopping cancels pending work. Requests already sent may still be billed.
@@ -34,29 +36,42 @@ make install        # builds sr.app and installs it to /Applications
 Then, one-time setup:
 
 1. **Grant Accessibility** when prompted (System Settings → Privacy & Security → Accessibility → enable **sr**). This is what lets sr read your selection; the hotkey itself works without it.
-2. **Add your ElevenLabs key**: menu bar → waveform icon → Settings… → paste key → Save. It is stored only in the macOS Keychain. Recommended: create a dedicated key scoped to *Text-to-Speech + User Read*, and opt out of training under ElevenLabs → Terms & Privacy → Data Use.
-3. *(Optional, for offline use)* click **Install Local Voice (Kokoro, ~330 MB)** in the menu. The Python version and full dependency closure are pinned and hash-verified; the model revision and behavior-defining files are checksum-verified too.
+2. **Add your ElevenLabs key**: menu bar → waveform icon → Settings… → Cost → paste key → Save. It is stored only in the macOS Keychain. Recommended: create a dedicated key scoped to *Text-to-Speech + User Read*, and opt out of training under ElevenLabs → Terms & Privacy → Data Use.
+3. *(Optional, for offline use)* click **Install Local Voice (Kokoro, ~330 MB)** in Settings → General. The Python version and full dependency closure are pinned and hash-verified; the model revision and behavior-defining files are checksum-verified too.
 4. *(Optional)* System Settings → General → Login Items → **+** → `/Applications/sr.app` to start at login.
 
 ## Usage
 
 | Action | How |
 |---|---|
-| Speak selection | Select text anywhere, press **⌥⇧/** (re-press replaces the current read) |
+| Speak selection — English | Select text anywhere, press **⌥A** (re-press replaces the current read) |
+| Speak selection — Norwegian | Same, **⌥⇧A** |
 | Pause / resume | **⌥⇧.** or the menu panel |
-| Seek, restart, stop, speed | Menu bar panel — transport buttons, slider, one-click speed presets |
-| Speak clipboard | Menu → Speak Clipboard |
-| Change hotkeys | Menu → Settings… |
-| Backend | **Auto** (cloud, falls back to local), **Cloud**, **Local 🔒** |
-| Reading language | Menu → **Reading language** (English or Norwegian) — picks the words normalization spells out ("50 %" → "50 percent" / "50 prosent") |
+| Previous / next sentence | **⌥⇧,** / **⌥⇧/** or the menu panel |
+| Seek, restart, stop, speed | Menu bar panel, or bind hotkeys in Settings → Shortcuts |
+| Speak clipboard | Menu → Speak Clipboard → Norwegian / English |
+| Change hotkeys | Settings (⌘,) → Shortcuts |
+| Voice & model per language | Settings (⌘,) → Voices |
+| Backend | Settings → General: **Auto** (cloud, falls back to local), **Cloud**, **Local 🔒** |
+
+sr only ever reads Norwegian or English, and only the one you asked for. The
+language is sent to ElevenLabs as `language_code`, which pins both the model and
+its text normalization — so a Norwegian selection is never read as English or
+anything else. Only **Flash v2.5** and **Turbo v2.5** accept that parameter;
+Settings → Voices warns if you pick Multilingual v2 or v3, which detect the
+language from the text instead. Kokoro has no Norwegian voice, so Norwegian
+reads always use ElevenLabs and are refused (not substituted) in Local-Only mode.
+
+sr's own text normalization follows the same language: the words it spells out
+before the voice ever sees them — "50 %", `f.eks.`, `∧` — are Norwegian in a
+Norwegian read and English in an English one.
 
 CLI (same binary):
 
 ```sh
 /Applications/sr.app/Contents/MacOS/sr --speak article.md      # or "-" for stdin
+/Applications/sr.app/Contents/MacOS/sr --speak artikkel.md --lang no
 /Applications/sr.app/Contents/MacOS/sr --speak-clipboard --local
-# Read as Norwegian for one invocation (default: the saved preference):
-/Applications/sr.app/Contents/MacOS/sr --speak artikkel.md --language nb
 # Explicitly bypass cloud budget/large-read gates for one invocation:
 /Applications/sr.app/Contents/MacOS/sr --speak article.md --override-cost-controls
 ```
@@ -98,11 +113,24 @@ make build     # debug build
 make test      # core + app CLI + daemon unit tests and normalization parity
 make app       # release build → dist/sr.app (locally signed)
 make run       # build + launch from dist/
+make install   # first install: build + replace /Applications/sr.app
+make update    # routine update: pull + build + swap the bundle + relaunch
 ```
+
+`make update` is the everyday command once sr is installed. It quits sr the way
+the Quit menu item does, so shutdown work still runs (pending ElevenLabs history
+deletions are persisted, the local daemon is stopped) instead of being killed
+mid-flight, and it syncs the bundle in place rather than deleting and recopying
+it. Use `make install` for the first install, or to replace a bundle outright.
+
+Neither command can reset your preferences. Voices, models, hotkeys, speed,
+budget and backend mode live in UserDefaults (`com.patrickellis.sr`), the API key
+lives in the login Keychain, and the audio cache and local voice live in
+`~/Library/Application Support/sr` — none of which are inside `sr.app`.
 
 Two toolchain notes:
 
-- **Signing / Accessibility across rebuilds**: without a codesigning identity, builds are ad-hoc signed and macOS forgets the Accessibility grant after every rebuild. Create a self-signed code-signing certificate named `sr-dev` (Keychain Access → Certificate Assistant → Create a Certificate… → type *Code Signing*) and `build-app.sh` picks it up automatically, making the grant stick.
+- **Signing / Keychain / Accessibility across rebuilds**: without a codesigning identity, builds are ad-hoc signed, which means *every build has a different identity*. macOS keys both the Accessibility grant and the Keychain ACL on that identity, so each rebuild looks like a brand-new app: the grant is forgotten and you are asked for your Keychain password again. This is not caused by reinstalling — an in-place update re-prompts just the same. The fix is a stable identity: create a self-signed code-signing certificate named `sr-dev` (Keychain Access → Certificate Assistant → Create a Certificate… → type *Code Signing*) and `build-app.sh` picks it up automatically, after which both stick across rebuilds.
 - **`make test` targets a Command-Line-Tools-only toolchain** (it wires the Swift Testing framework paths manually). With full Xcode installed, plain `swift test` should also work.
 
 Layout: `Sources/SRCore` (engine: normalizer, providers, cache, cost, privacy), `Sources/sr` (menu bar app, playback, capture, CLI), `daemon/` (local TTS daemon plus its hashed dependency lock), `Tests/` (core, app CLI, daemon, and parity tests). `PROGRESS.md` tracks the build log and roadmap (Shortcuts, MCP server, URL scheme, notarized releases).

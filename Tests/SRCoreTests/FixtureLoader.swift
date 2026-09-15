@@ -13,7 +13,7 @@ enum FixtureLoader {
     /// English parity fixtures (T-4).
     static let englishDirectory = "fixtures"
     /// Norwegian fixtures for the language-aware normalizer.
-    static let norwegianDirectory = "fixtures-nb"
+    static let norwegianDirectory = "fixtures-no"
 
     static func pairs(in subdirectory: String = englishDirectory) throws -> [Pair] {
         guard let urls = Bundle.module.urls(forResourcesWithExtension: "txt",
