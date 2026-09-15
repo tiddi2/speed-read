@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Added a reader overlay: a borderless, always-on-top window that shows the
+  text while it is read, with the word being spoken highlighted. It appears in
+  the top-right of the display the selection was made on, can be dragged
+  anywhere (sr remembers the spot relative to that screen's corner), and shows
+  the previous, current and next sentence — each of the three can be switched
+  off in Settings → General, as can the overlay itself. It carries
+  previous-sentence / play-pause / next-sentence buttons, a progress bar, the
+  sentence counter, and read-only readouts of the playback speed and the
+  language being read. The overlay never takes keyboard focus, so the selection
+  in the app you read from stays intact. ⌥⇧[ and ⌥⇧] (new defaults) change the
+  speed the readout shows; the overlay itself is bound to no key by default but
+  can be given one in Settings → Shortcuts.
+  - The word cursor is estimated, not measured: neither backend returns word
+    timings, and cached audio has none to return. Each word is weighted by its
+    length and the pause its punctuation buys, and the estimate is re-anchored
+    at every sentence boundary, so error stays inside one sentence instead of
+    accumulating. The sentence the overlay emphasizes is always exact.
+  - The overlay shows sr's *normalized* text — the exact strings sent to the
+    synthesizer — so what you read is what you hear, with LaTeX spoken out and
+    PDF line breaks repaired. It holds that text only while the read is in
+    progress and drops it on stop.
+
 - Reading is now per language, and only Norwegian or English. Each language has
   its own hotkey, voice and model, and the language is pinned on the ElevenLabs
   request (`language_code`) rather than detected from the text, so a read never

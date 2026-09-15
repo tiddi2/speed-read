@@ -274,7 +274,8 @@ struct MenuView: View {
 
 /// Circular transport control with a hover ring and a full-circle hit area.
 /// `prominent` renders as the accent-filled hero (play/pause).
-private struct TransportButton: View {
+/// Shared with the reader overlay, so the two transports feel like one control.
+struct TransportButton: View {
     let systemName: String
     var size: CGFloat = 36
     var iconSize: CGFloat = 15
@@ -489,6 +490,21 @@ private struct GeneralSettings: View {
                 }
                 Text("Kokoro speaks English only. Norwegian reads always use ElevenLabs, and are refused in Local-Only mode rather than read with an English voice.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Reader overlay") {
+                Toggle("Show the reader while sr is speaking",
+                       isOn: $state.readerOverlayEnabled)
+                Toggle("Previous sentence", isOn: $state.readerShowsPreviousSentence)
+                    .disabled(!state.readerOverlayEnabled)
+                Toggle("Current sentence, with the spoken word highlighted",
+                       isOn: $state.readerShowsCurrentSentence)
+                    .disabled(!state.readerOverlayEnabled)
+                Toggle("Next sentence", isOn: $state.readerShowsNextSentence)
+                    .disabled(!state.readerOverlayEnabled)
+                Text("A borderless window in the top-right of the screen the selection is on — drag it anywhere and sr remembers. It also shows the speed (change it with the Faster / Slower hotkeys) and which language is being read; neither is editable mid-read.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Reset Overlay Position") { state.resetReaderOverlayPosition() }
             }
 
             Section("Permissions") {
