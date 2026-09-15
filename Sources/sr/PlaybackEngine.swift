@@ -68,6 +68,10 @@ final class PlaybackEngine: ObservableObject {
     @Published private(set) var totalSentences = 0
     @Published private(set) var currentSeconds: Double = 0
     @Published private(set) var availableSeconds: Double = 0
+    /// How far playback is through `currentSentence`, 0…1. Drives the reader
+    /// overlay's word cursor; see ReaderSentence for why the word position is
+    /// derived from this rather than from provider timings.
+    @Published private(set) var sentenceProgress: Double = 0
 
     var rate: Double {
         didSet {
@@ -157,7 +161,8 @@ final class PlaybackEngine: ObservableObject {
         guard isActive else { return }
         SRLog.event("playback.config_change", [:])
         // The engine is stopped; playerTime is gone. pausedAtFrame tracks the
-        // last known position (updated 4×/s while playing), so resume there.
+        // last known position (updated by the UI timer while playing), so
+        // resume there.
         rescheduleContent(from: pausedAtFrame)
     }
 
@@ -314,6 +319,7 @@ final class PlaybackEngine: ObservableObject {
         totalSentences = 0
         currentSeconds = 0
         availableSeconds = 0
+        sentenceProgress = 0
         state = .idle
     }
 
@@ -363,6 +369,21 @@ final class PlaybackEngine: ObservableObject {
     /// baked into the segment, so a jump starts on speech, not on silence.
     private func sentenceStartFrame(_ index: Int) -> AVAudioFramePosition {
         segmentStartFrames[index] + AVAudioFramePosition(segments[index].pauseFrames)
+    }
+
+    /// Audible span of sentence `index`: its first speech frame up to the next
+    /// segment's start, or to the end of what has been decoded for the last
+    /// one. The inter-sentence pause is the *next* segment's leading silence,
+    /// so it falls outside this span — a playhead sitting in it reports
+    /// progress 0 through the sentence about to be spoken.
+    private func sentenceBounds(_ index: Int)
+        -> (start: AVAudioFramePosition, end: AVAudioFramePosition) {
+        let start = sentenceStartFrame(index)
+        let end = index + 1 < segmentStartFrames.count
+            ? segmentStartFrames[index + 1]
+            : totalFrames
+        // Never hand back an empty or inverted span: callers divide by it.
+        return (start, max(end, start + 1))
     }
 
     /// Restart from the top.
@@ -549,7 +570,10 @@ final class PlaybackEngine: ObservableObject {
 
     private func startUITimer() {
         uiTimer?.invalidate()
-        uiTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        // 10 Hz: fast enough that the reader overlay's word cursor lands on
+        // the right word rather than trailing it (a word at 1.5x lasts a few
+        // hundred ms), cheap enough to leave running for a whole article.
+        uiTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.updateUIPosition()
             }
@@ -560,7 +584,12 @@ final class PlaybackEngine: ObservableObject {
         let frame = currentFrame
         currentSeconds = Double(frame) / Self.sampleRate
         if let index = segmentIndex(containing: frame) {
-            currentSentence = index
+            if currentSentence != index { currentSentence = index }
+            let bounds = sentenceBounds(index)
+            let progress = Double(frame - bounds.start)
+                / Double(bounds.end - bounds.start)
+            let clamped = min(max(progress, 0), 1)
+            if abs(sentenceProgress - clamped) > 0.001 { sentenceProgress = clamped }
         }
         // Keep the fallback position fresh: it's the resume point after an
         // engine configuration change, when playerTime is unavailable.

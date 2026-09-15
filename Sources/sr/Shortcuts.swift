@@ -29,13 +29,22 @@ extension KeyboardShortcuts.Name {
     static let nextSentence = Self("nextSentence",
         default: .init(.slash, modifiers: [.option, .shift]))
 
+    /// ⌥⇧[ / ⌥⇧] — slower / faster. Bound by default because the reader
+    /// overlay shows the speed but deliberately offers no control for it: the
+    /// readout would be a dead end if there were no key to change it with.
+    /// They extend the same ⌥⇧ cluster as the transport keys.
+    static let speedDown = Self("speedDown",
+        default: .init(.leftBracket, modifiers: [.option, .shift]))
+    static let speedUp = Self("speedUp",
+        default: .init(.rightBracket, modifiers: [.option, .shift]))
+
     /// Unset by default — the menu panel already has buttons for these.
     static let stop = Self("stop")
     static let restart = Self("restart")
     static let seekBackward = Self("seekBackward")
     static let seekForward = Self("seekForward")
-    static let speedUp = Self("speedUp")
-    static let speedDown = Self("speedDown")
+    /// Show/hide the reader overlay.
+    static let toggleReaderOverlay = Self("toggleReaderOverlay")
 }
 
 /// One configurable hotkey, as shown in Settings → Shortcuts.
@@ -78,7 +87,11 @@ enum ShortcutCatalog {
         ]),
         ("Speed", [
             ShortcutBinding(.speedDown, "Slower (−0.1×)"),
-            ShortcutBinding(.speedUp, "Faster (+0.1×)"),
+            ShortcutBinding(.speedUp, "Faster (+0.1×)",
+                            note: "The reader overlay shows the current speed; these keys are how you change it."),
+        ]),
+        ("Reader", [
+            ShortcutBinding(.toggleReaderOverlay, "Show / hide the reader overlay"),
         ]),
     ]
 

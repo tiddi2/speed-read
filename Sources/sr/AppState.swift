@@ -101,6 +101,123 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: Reader overlay
+
+    /// The text of the read in progress, for the reader overlay. Held only
+    /// while sr is actually speaking and dropped on stop — the overlay is a
+    /// view of the current read, never a transcript sr keeps around.
+    struct ReadingSession {
+        let language: SpeechLanguage
+        /// Normalized sentences, in order: exactly the strings that were sent
+        /// to the synthesizer, so what is shown is what is being said.
+        let sentences: [String]
+
+        /// nil outside the read, which is what the overlay's context lines
+        /// want at the first and last sentence.
+        func sentence(at index: Int) -> String? {
+            sentences.indices.contains(index) ? sentences[index] : nil
+        }
+    }
+
+    @Published private(set) var reading: ReadingSession?
+    let readerOverlay = ReaderOverlayController()
+
+    @Published var readerOverlayEnabled: Bool {
+        didSet {
+            settings.readerOverlayEnabled = readerOverlayEnabled
+            readerOverlayDismissed = false
+            updateReaderOverlay()
+        }
+    }
+    @Published var readerShowsPreviousSentence: Bool {
+        didSet {
+            settings.readerShowsPreviousSentence = readerShowsPreviousSentence
+            readerOverlay.relayout()
+        }
+    }
+    @Published var readerShowsCurrentSentence: Bool {
+        didSet {
+            settings.readerShowsCurrentSentence = readerShowsCurrentSentence
+            readerOverlay.relayout()
+        }
+    }
+    @Published var readerShowsNextSentence: Bool {
+        didSet {
+            settings.readerShowsNextSentence = readerShowsNextSentence
+            readerOverlay.relayout()
+        }
+    }
+
+    var readerShowsAnySentence: Bool {
+        readerShowsPreviousSentence || readerShowsCurrentSentence || readerShowsNextSentence
+    }
+
+    /// Hidden with the overlay's own ✕, for this read only.
+    private var readerOverlayDismissed = false
+    /// Where the pointer was when the read was started, so the overlay opens
+    /// on the display the selection is on rather than wherever sr last drew.
+    private var selectionPoint: NSPoint?
+    /// Word splitting is cheap but the overlay asks for the current sentence
+    /// ten times a second; parse each one once.
+    private var parsedSentence: (index: Int, sentence: ReaderSentence)?
+
+    /// The sentence being spoken, split into words. nil when nothing is
+    /// playing or the read has no sentence at that index.
+    var currentReaderSentence: ReaderSentence? {
+        guard let reading else { return nil }
+        let index = playback.currentSentence
+        guard let text = reading.sentence(at: index) else { return nil }
+        if let parsedSentence, parsedSentence.index == index {
+            return parsedSentence.sentence
+        }
+        let parsed = ReaderSentence.parse(text)
+        parsedSentence = (index, parsed)
+        return parsed
+    }
+
+    /// Forget a dragged position and send the overlay back to the top-right
+    /// of the screen the current read started on.
+    func resetReaderOverlayPosition() {
+        settings.resetReaderOverlayPosition()
+        readerOverlay.reposition(near: selectionPoint)
+    }
+
+    /// Hide the overlay for the current read without changing the setting.
+    func dismissReaderOverlay() {
+        readerOverlayDismissed = true
+        readerOverlay.hide()
+    }
+
+    /// Hotkey: hide the reader, or bring it back. Turning it off this way
+    /// sticks for the next read too; the overlay's own ✕ is the "just this
+    /// read" version.
+    func toggleReaderOverlay() {
+        if readerOverlayEnabled && !readerOverlayDismissed {
+            readerOverlayEnabled = false
+        } else if readerOverlayEnabled {
+            // Dismissed by the ✕ but still enabled — restore it.
+            readerOverlayDismissed = false
+            updateReaderOverlay()
+        } else {
+            readerOverlayEnabled = true
+        }
+    }
+
+    private func updateReaderOverlay() {
+        guard reading != nil, readerOverlayEnabled, !readerOverlayDismissed else {
+            readerOverlay.hide()
+            return
+        }
+        readerOverlay.show(state: self, near: selectionPoint)
+    }
+
+    /// Drop the on-screen text the moment the read ends.
+    private func endReading() {
+        reading = nil
+        parsedSentence = nil
+        readerOverlay.hide()
+    }
+
     private var statusClearTask: Task<Void, Never>?
     private var installTask: Task<Void, Never>?
     private var preparationTask: Task<Void, Never>?
@@ -137,6 +254,10 @@ final class AppState: ObservableObject {
         backendMode = store.backendMode
         autoDeleteHistory = store.autoDeleteHistory
         cacheEnabled = store.cacheEnabled
+        readerOverlayEnabled = store.readerOverlayEnabled
+        readerShowsPreviousSentence = store.readerShowsPreviousSentence
+        readerShowsCurrentSentence = store.readerShowsCurrentSentence
+        readerShowsNextSentence = store.readerShowsNextSentence
         AudioCache.shared.enabled = store.cacheEnabled
 
         // Pre-language-profile hotkey. Its stored value is dead now that every
@@ -249,6 +370,9 @@ final class AppState: ObservableObject {
         KeyboardShortcuts.onKeyDown(for: .speedUp) { [weak self] in
             Task { @MainActor in self?.nudgeRate(by: 0.1) }
         }
+        KeyboardShortcuts.onKeyDown(for: .toggleReaderOverlay) { [weak self] in
+            Task { @MainActor in self?.toggleReaderOverlay() }
+        }
     }
 
     /// Step the playback rate, clamped to the supported 0.5×–3.0× range.
@@ -265,6 +389,11 @@ final class AppState: ObservableObject {
     /// playback untouched. (Q-5 revisited by user request — stopping is the
     /// pause hotkey's and the menu's job.)
     func speakSelection(language: SpeechLanguage) {
+        // Where the pointer is when the hotkey fires is the best available
+        // proxy for which display the selection is on; AX gives no reliable
+        // screen rect for a selection across apps. Read it now, not when the
+        // overlay opens — by then the pointer may have moved.
+        selectionPoint = NSEvent.mouseLocation
         // Routing is decided on the app that is frontmost at hotkey time (P-8).
         let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let action = routing.action(for: bundleID)
@@ -293,6 +422,7 @@ final class AppState: ObservableObject {
     }
 
     func speakClipboard(language: SpeechLanguage) {
+        selectionPoint = NSEvent.mouseLocation
         let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let action = routing.action(for: bundleID)
         if action == .block {
@@ -317,6 +447,7 @@ final class AppState: ObservableObject {
         pipeline.cancel()
         playback.stop()
         activeUsesCloud = false
+        endReading()
     }
 
     private func handleCapture(_ result: SelectionCapture.CaptureResult,
@@ -535,8 +666,16 @@ final class AppState: ObservableObject {
 
         playback.startSession(totalSentences: chunks.count)
         activeUsesCloud = !routes.isLocal
+        // The overlay reads from `reading`; publish before showing it so its
+        // first frame has the opening sentence rather than an empty pane.
+        reading = ReadingSession(language: language,
+                                 sentences: chunks.map(\.text))
+        parsedSentence = nil
+        readerOverlayDismissed = false
+        updateReaderOverlay()
         playback.onFinished = { [weak self] in
             self?.activeUsesCloud = false
+            self?.endReading()
             self?.refreshCredits()
         }
         playback.onError = { [weak self] message in

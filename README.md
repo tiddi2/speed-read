@@ -12,6 +12,7 @@ sr is a privacy-first text-to-speech utility for macOS. It lives in your menu ba
 - **Top-tier voices** — ElevenLabs (Flash v2.5 / Turbo / Multilingual v2 / v3) with your account's full voice list, or the local Kokoro model (free, offline, Apple Silicon).
 - **Instant, pitch-perfect speed** — 0.5×–3.0× applied client-side with time-domain (WSOLA) stretching. Changing speed never re-generates audio and never costs credits.
 - **Full transport** — play/pause, ±1 sentence, ±5 s seek, restart, stop, live progress, from the menu bar panel or the keyboard.
+- **See what you're hearing** — an optional borderless reader floats over whatever you're reading from, showing the previous, current and next sentence *in full* with the spoken word highlighted, plus play/pause, sentence stepping, speed and language. Nothing is truncated: the window sizes itself to the text. It never takes focus, so your selection survives.
 - **Smart text cleanup** — PDF line-break repair, LaTeX math to spoken English, Markdown stripping, citations, units, URLs — ported from [Speak11](https://github.com/smcantab/speak11) and parity-tested.
 - **Cache-first** — repeated reads are instant and free (content-addressed local cache, size-capped, purgeable, disableable, with burst writes coalesced into one maintenance sweep).
 - **Bounded read-ahead** — prepares only the current sentence plus five ahead; pausing prevents new requests and stopping cancels pending work. Requests already sent may still be billed.
@@ -48,11 +49,48 @@ Then, one-time setup:
 | Speak selection — Norwegian | Same, **⌥⇧A** |
 | Pause / resume | **⌥⇧.** or the menu panel |
 | Previous / next sentence | **⌥⇧,** / **⌥⇧/** or the menu panel |
-| Seek, restart, stop, speed | Menu bar panel, or bind hotkeys in Settings → Shortcuts |
+| Slower / faster | **⌥⇧[** / **⌥⇧]** (±0.1×) |
+| Seek, restart, stop | Menu bar panel, or bind hotkeys in Settings → Shortcuts |
+| Show / hide the reader overlay | Settings → General, the overlay's ✕, or a hotkey you bind |
 | Speak clipboard | Menu → Speak Clipboard → Norwegian / English |
 | Change hotkeys | Settings (⌘,) → Shortcuts |
 | Voice & model per language | Settings (⌘,) → Voices |
 | Backend | Settings → General: **Auto** (cloud, falls back to local), **Cloud**, **Local 🔒** |
+
+### The reader overlay
+
+While sr speaks, a borderless window floats in the top-right of the display
+your selection is on, showing the previous, current and next sentence with the
+word being spoken highlighted — drag it anywhere and sr puts it back there
+next time. Settings → General switches the overlay off, or any of the three
+sentence lines individually. The speed and language it shows are readouts, not
+controls: the language is fixed for the life of a read (it is chosen by which
+hotkey started it), and the speed is changed with ⌥⇧[ / ⌥⇧].
+
+All three sentences are shown whole — no ellipsis, no clipped line — and the
+window's height follows the text. Only a sentence long enough to fill the
+screen (the chunker allows up to 5,000 characters, which means minified text
+or OCR without punctuation, not prose) stops it growing; then the pane scrolls
+and keeps the sentence being read in view, so the text is still all there.
+
+Two things worth knowing about it:
+
+- **It shows what is spoken, not what you selected.** The text is sr's
+  normalized form — LaTeX read out in words, PDF line breaks repaired,
+  citations dropped — because that is what the voice is saying.
+- **The word cursor is an estimate.** No TTS backend sr uses returns word
+  timings, and cached audio could not carry them anyway, so the position is
+  derived from playback progress through the sentence, weighted by word length
+  and punctuation. It is re-anchored at every sentence boundary, so it can be a
+  word out inside a sentence but never drifts beyond one. The sentence it
+  emphasizes is always the one being read.
+
+sr does not highlight in the source app itself. There is no cross-application
+way to draw into another app's text: Accessibility exposes bounds for a text
+range only in the apps that implement it, the normalized text no longer lines
+up with the source characters, and the source view scrolls and reflows while
+you listen. A floating window behaves the same everywhere, which is the point
+of "select anywhere".
 
 sr only ever reads Norwegian or English, and only the one you asked for. The
 language is sent to ElevenLabs as `language_code`, which pins both the model and
@@ -82,6 +120,7 @@ CLI (same binary):
 - **Clipboard integrity** — the ⌘C fallback snapshots and restores your full clipboard (images, RTF, files), verifies ownership via change count, and restores again if a delayed copy arrives after timeout.
 - **Concealed-content refusal** — content marked protected through Accessibility or concealed through `org.nspasteboard.ConcealedType` is never spoken, cached, logged, or transmitted.
 - **Content-free logging** — logs record counts, latencies, and status codes. Never your text.
+- **The reader overlay is local and transient** — it renders text that is already being read on this Mac, holds it only while the read is in progress, drops it on stop, and never writes it anywhere. Turn it off in Settings → General if a screen is the wrong place for what you're reading.
 - **Cloud history auto-delete** — every ElevenLabs generation is deleted from your account history seconds after synthesis (on by default; best-effort — see ElevenLabs' retention docs for backup windows).
 - **Per-app routing** — block sr in specific apps or force the local voice for sensitive ones (`~/Library/Application Support/sr/rules.json`); password managers are blocked out of the box.
 - **Private audio cache** — the cache directory is owner-only (0700), new audio files are owner-only (0600), and caching stays disabled if the private directory cannot be established. Existing cache directory permissions are repaired at startup, including removal of extended ACL grants.

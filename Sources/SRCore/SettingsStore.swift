@@ -34,6 +34,12 @@ public struct SettingsStore {
         static let autoDeleteHistory = "autoDeleteHistory"
         static let cacheEnabled = "cacheEnabled"
         static let backendMode = "backendMode"
+        static let readerOverlayEnabled = "readerOverlayEnabled"
+        static let readerShowsPreviousSentence = "readerShowsPreviousSentence"
+        static let readerShowsCurrentSentence = "readerShowsCurrentSentence"
+        static let readerShowsNextSentence = "readerShowsNextSentence"
+        static let readerOverlayOffsetX = "readerOverlayOffsetX"
+        static let readerOverlayOffsetY = "readerOverlayOffsetY"
     }
 
     /// Backend modes (F-3): Auto = cloud with local fallback.
@@ -134,6 +140,66 @@ public struct SettingsStore {
             BackendMode(rawValue: defaults.string(forKey: Key.backendMode) ?? "") ?? .auto
         }
         nonmutating set { defaults.set(newValue.rawValue, forKey: Key.backendMode) }
+    }
+
+    // MARK: - Reader overlay
+
+    /// Show the floating reader while sr is speaking. ON by default: seeing
+    /// the words is the point of the feature, and the overlay only ever
+    /// renders text that is already being read on this Mac.
+    public var readerOverlayEnabled: Bool {
+        get { bool(Key.readerOverlayEnabled, default: true) }
+        nonmutating set { defaults.set(newValue, forKey: Key.readerOverlayEnabled) }
+    }
+
+    /// Which of the three context lines the overlay shows. All three off is a
+    /// legitimate choice — it leaves the transport, speed and language readout.
+    public var readerShowsPreviousSentence: Bool {
+        get { bool(Key.readerShowsPreviousSentence, default: true) }
+        nonmutating set { defaults.set(newValue, forKey: Key.readerShowsPreviousSentence) }
+    }
+
+    public var readerShowsCurrentSentence: Bool {
+        get { bool(Key.readerShowsCurrentSentence, default: true) }
+        nonmutating set { defaults.set(newValue, forKey: Key.readerShowsCurrentSentence) }
+    }
+
+    public var readerShowsNextSentence: Bool {
+        get { bool(Key.readerShowsNextSentence, default: true) }
+        nonmutating set { defaults.set(newValue, forKey: Key.readerShowsNextSentence) }
+    }
+
+    /// Where the user dragged the overlay, stored as the offset of its
+    /// top-right corner from the top-right corner of the screen it is on —
+    /// not as an absolute point. A relative offset keeps the window in the
+    /// same visual spot when the selection is on a different display, or when
+    /// the display's resolution changes, instead of stranding it off-screen.
+    public var readerOverlayCornerOffset: (x: Double, y: Double) {
+        get {
+            guard defaults.object(forKey: Key.readerOverlayOffsetX) != nil,
+                  defaults.object(forKey: Key.readerOverlayOffsetY) != nil else {
+                return Self.defaultReaderOverlayOffset
+            }
+            return (defaults.double(forKey: Key.readerOverlayOffsetX),
+                    defaults.double(forKey: Key.readerOverlayOffsetY))
+        }
+        nonmutating set {
+            defaults.set(newValue.x, forKey: Key.readerOverlayOffsetX)
+            defaults.set(newValue.y, forKey: Key.readerOverlayOffsetY)
+        }
+    }
+
+    /// Top-right of the screen, inset by the standard window margin.
+    /// Computed rather than stored: a stored tuple is not `Sendable`.
+    public static var defaultReaderOverlayOffset: (x: Double, y: Double) { (-16, -16) }
+
+    public func resetReaderOverlayPosition() {
+        defaults.removeObject(forKey: Key.readerOverlayOffsetX)
+        defaults.removeObject(forKey: Key.readerOverlayOffsetY)
+    }
+
+    private func bool(_ key: String, default fallback: Bool) -> Bool {
+        defaults.object(forKey: key) == nil ? fallback : defaults.bool(forKey: key)
     }
 
     public var voiceSettings: VoiceSettings {
