@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added `make update` for routine updates of an installed sr.app: pull, rebuild,
+  swap the bundle in place, relaunch. It quits sr the way the Quit menu item
+  does, so `applicationShouldTerminate` runs and pending ElevenLabs history
+  deletions are persisted and the local daemon stopped — `make install`
+  previously `pkill`ed the app, skipping that shutdown work entirely, which is
+  now fixed there too.
+
 - Reading is now per language, and only Norwegian or English. Each language has
   its own hotkey, voice and model, and the language is pinned on the ElevenLabs
   request (`language_code`) rather than detected from the text, so a read never
