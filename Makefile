@@ -1,5 +1,5 @@
 .PHONY: build test app run install update setup-signing reset-permissions \
-        signing-status quit-sr clean pin-f5-model
+        signing-status quit-sr clean pin-f5-model check-offline
 
 build:
 	swift build
@@ -24,6 +24,21 @@ test:
 
 app:
 	bash scripts/build-app.sh release
+
+# What is wrong with the offline voice, in full. The daemon reports an
+# unexpected exception by class name alone (its message could quote the text
+# being read), which leaves "RuntimeError" standing for a missing checkpoint,
+# a Metal allocation failure and an unreadable recording alike. This runs the
+# same stack in the foreground on a sentence of its own, so it can print the
+# exception, its traceback and the file sizes behind it. Uses the installed
+# venv, so it needs no rebuild.
+VENV_PYTHON := $(HOME)/Library/Application Support/sr/kokoro/venv/bin/python3
+check-offline:
+	@test -x "$(VENV_PYTHON)" || { \
+	  printf 'No offline voice installed: %s is missing.\n' "$(VENV_PYTHON)" >&2; \
+	  exit 1; }
+	@"$(VENV_PYTHON)" daemon/sr_tts_server.py --self-test $(VOICE)
+
 
 run: app
 	open dist/sr.app

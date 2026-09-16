@@ -128,6 +128,13 @@
   no text either and are the difference between a name to look up and a name
   to guess at. Status rows in the menu bar panel wrap instead of truncating.
 
+  And `make check-offline` answers it outright. It runs the offline stack in
+  the foreground on a sentence of its own — so there is nothing to protect and
+  it can print the exception, its traceback and the size of every file it
+  used — resolving paths and architecture from the same install manifest and
+  Settings override sr itself reads, against the installed environment rather
+  than a rebuild.
+
 - A failed signing-identity setup no longer aborts `make update`, and says what
   went wrong when it does fail. `setup-signing.sh` judged its two certificate
   import routes by exit status, but a PKCS#12 that macOS accepts without

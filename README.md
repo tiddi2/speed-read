@@ -173,6 +173,17 @@ Settings → Voices has an **Architecture** switch — flip it, and the next rea
 reloads the model the other way. Cached Norwegian audio is keyed on the choice,
 so nothing generated the wrong way is ever replayed.
 
+**If a read fails outright.** Run `make check-offline` from a checkout. The
+daemon never relays an exception's message — it could quote the text being
+read — so a failure reaches the menu bar as its phase and, where every way of
+failing has one fix, that condition: model files damaged, checkpoint against
+the wrong architecture, recording unreadable, out of memory. `check-offline`
+loads the model and reads a sentence of its own in the foreground, where there
+is nothing to protect, and prints the exception, its traceback, and the size of
+every file it used. It runs against the installed environment, so it needs no
+rebuild, and takes a voice id to test one in particular:
+`make check-offline VOICE=min-stemme`.
+
 CLI (same binary):
 
 ```sh

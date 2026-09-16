@@ -254,9 +254,12 @@ def during(step, diagnosis=None):
         raise
     except Exception as exc:
         log(f"error while {step}: {type(exc).__name__} at {_traceback_frames(exc)}")
+        # Chained, not suppressed. Only the EngineError's own message reaches
+        # the log and the wire, so P-5 is unaffected — but keeping the cause
+        # attached is what lets --self-test print what actually went wrong.
         if _is_out_of_memory(exc):
-            raise EngineError(f"ran out of memory while {step}") from None
-        raise EngineError(diagnosis or f"{type(exc).__name__} while {step}") from None
+            raise EngineError(f"ran out of memory while {step}") from exc
+        raise EngineError(diagnosis or f"{type(exc).__name__} while {step}") from exc
 
 
 def _generate_segments(text, voice, speed, lang_code, cancel_check, depth=0):
@@ -600,7 +603,7 @@ def load_f5_model():
                 log(f"f5: weights do not fit the model "
                     f"({_traceback_frames(error, 1)})")
                 raise EngineError(
-                    "checkpoint does not fit the F5 architecture") from None
+                    "checkpoint does not fit the F5 architecture") from error
         with during("preparing the Norwegian model"):
             mx.eval(f5.parameters())
         f5_model = f5
@@ -656,7 +659,7 @@ def _f5_reference(voice):
         # quotes the path — so name the condition instead and let the log
         # carry the class.
         log(f"f5: unreadable reference clip ({type(error).__name__})")
-        raise EngineError("reference recording could not be read") from None
+        raise EngineError("reference recording could not be read") from error
     if sample_rate != F5_SAMPLE_RATE:
         raise EngineError("reference recording is not 24 kHz")
     audio = audio.mean(axis=1) if audio.shape[1] > 1 else audio[:, 0]
@@ -793,7 +796,10 @@ def _release_model_scratch():
     import mlx.core as mx
 
     gc.collect()
-    mx.metal.clear_cache()
+    # mx.metal.clear_cache is deprecated in favour of mx.clear_cache and warns
+    # on every call; keep the old spelling only for an older pinned mlx.
+    clear = getattr(mx, "clear_cache", None) or mx.metal.clear_cache
+    clear()
 
 
 def handle_client(conn):
@@ -1115,5 +1121,163 @@ def main():
     do_shutdown()
 
 
+# ── Self-test ────────────────────────────────────────────────────────
+
+# A sentence written here, not one anyone selected — which is the whole
+# reason this mode may print what the daemon may not.
+SELF_TEST_TEXT = "Dette er en test av den norske stemmen."
+
+
+def _self_test_paths():
+    """Fill in the standard install layout for anything not in the env.
+
+    Run by hand the daemon has no supervisor to hand it the verified paths,
+    so it falls back to where the installer puts them.
+    """
+    global MODEL_PATH, F5_MODEL_PATH, F5_VOCODER_PATH, F5_VOICES_PATH, F5_ARCH_JSON
+
+    f5_base = os.path.expanduser("~/Library/Application Support/sr/f5")
+    F5_MODEL_PATH = F5_MODEL_PATH or os.path.join(f5_base, "model")
+    F5_VOCODER_PATH = F5_VOCODER_PATH or os.path.join(f5_base, "vocoder")
+    F5_VOICES_PATH = F5_VOICES_PATH or os.path.join(f5_base, "voices")
+    MODEL_PATH = MODEL_PATH or os.path.join(DATA_DIR, "Kokoro-82M-bf16")
+
+    if F5_ARCH_JSON:
+        print(f"arch:            {F5_ARCH_JSON} (from SR_F5_ARCH)")
+        return
+
+    # What the supervisor would have passed: the architecture the installer
+    # recorded, with the Settings → Voices override applied if there is one.
+    # Reading the same two sources sr reads is the point — an arch that
+    # differs from the app's would diagnose a different install than the one
+    # that is failing.
+    try:
+        with open(os.path.join(f5_base, "manifest.json"), encoding="utf-8") as f:
+            arch = json.load(f)["arch"]
+        source = "manifest.json"
+    except (OSError, ValueError, KeyError) as error:
+        print(f"arch:            built-in defaults "
+              f"({type(error).__name__} reading manifest.json)")
+        return
+
+    variant = _preference("f5Variant")
+    if variant == "f5tts_base":
+        arch.update(text_mask_padding=False, pe_attn_head=1)
+        source += " + Settings override (F5-TTS Base)"
+    elif variant == "f5tts_v1_base":
+        arch.update(text_mask_padding=True, pe_attn_head=None)
+        source += " + Settings override (F5-TTS v1 Base)"
+    F5_ARCH_JSON = json.dumps(arch, sort_keys=True)
+    print(f"arch:            {F5_ARCH_JSON} ({source})")
+
+
+def _preference(key):
+    """One value out of sr's preferences, or None. Read-only, no defaults(1)."""
+    import plistlib
+
+    path = os.path.expanduser(
+        "~/Library/Preferences/com.patrickellis.sr.plist")
+    try:
+        with open(path, "rb") as f:
+            return plistlib.load(f).get(key)
+    except Exception:
+        return None
+
+
+def _describe(label, path):
+    try:
+        size = os.path.getsize(path)
+        print(f"{label:<16} {size:>14,} bytes  {path}")
+    except OSError as error:
+        print(f"{label:<16} {type(error).__name__:>14}  {path}")
+
+
+def self_test(voice=None):
+    """Run the offline Norwegian stack in the foreground, and say what fails.
+
+    The daemon reports an unexpected exception by class name alone because its
+    message could quote the text being read (P-5). That is the right trade for
+    a running daemon and the wrong one when the question is which of a dozen
+    setup problems you have — `RuntimeError` is what mlx raises for a
+    checkpoint that is missing, truncated or stored in a dtype it cannot read,
+    what Metal raises when it cannot allocate, and what soundfile subclasses
+    for a clip it cannot decode. Here the text is a fixed literal, so there is
+    nothing to protect and the exception is printed whole.
+    """
+    import platform
+    import traceback
+
+    # Mirror the daemon's own log lines to the terminal: how far the load got
+    # is half the answer, and nobody should have to tail a file to see it.
+    global log
+    to_file = log
+
+    def log(message):
+        print(f"  {message}")
+        to_file(message)
+
+    print(f"python:          {platform.python_version()} ({sys.executable})")
+    _self_test_paths()
+
+    for module in ("mlx", "mlx_audio", "f5_tts_mlx", "vocos_mlx", "soundfile"):
+        try:
+            import importlib.metadata as metadata
+            print(f"{module + ':':<16} {metadata.version(module.replace('_', '-'))}")
+        except Exception as error:
+            print(f"{module + ':':<16} NOT INSTALLED ({type(error).__name__})")
+
+    try:
+        import mlx.core as mx
+        device_info = getattr(mx, "device_info", None) or mx.metal.device_info
+        limit = device_info().get("max_recommended_working_set_size", 0)
+        print(f"metal budget:    {limit:,} bytes")
+    except Exception as error:
+        print(f"metal budget:    unavailable ({type(error).__name__})")
+
+    print()
+    _describe("weights:", os.path.join(F5_MODEL_PATH, "model_v1.safetensors"))
+    _describe("vocab:", os.path.join(F5_MODEL_PATH, "vocab.txt"))
+    _describe("vocoder:", os.path.join(F5_VOCODER_PATH, "model.safetensors"))
+    _describe("vocoder config:", os.path.join(F5_VOCODER_PATH, "config.yaml"))
+
+    voices = sorted(
+        name for name in (os.listdir(F5_VOICES_PATH) if os.path.isdir(F5_VOICES_PATH) else [])
+        if os.path.isdir(os.path.join(F5_VOICES_PATH, name)) and not name.startswith("."))
+    print(f"voices:          {', '.join(voices) if voices else 'NONE'}")
+    voice = voice or (voices[0] if voices else None)
+    if voice is None:
+        print("\nNo reference voice to read with — record one in Settings → Voices.")
+        return 1
+    _describe("ref.wav:", os.path.join(F5_VOICES_PATH, voice, "ref.wav"))
+    _describe("ref.txt:", os.path.join(F5_VOICES_PATH, voice, "ref.txt"))
+
+    for step, run in (
+        ("loading the model", load_f5_model),
+        (f"reading a sentence as {voice!r}",
+         lambda: _f5_generate_segments(SELF_TEST_TEXT, voice, None)),
+    ):
+        print(f"\n== {step} ==")
+        started = time.time()
+        try:
+            result = run()
+        except Exception:
+            print(f"FAILED after {time.time() - started:.1f}s\n")
+            traceback.print_exc()
+            return 1
+        elapsed = time.time() - started
+        if isinstance(result, list):
+            samples = sum(audio.size for audio, _ in result)
+            print(f"ok in {elapsed:.1f}s — {samples / F5_SAMPLE_RATE:.1f}s of audio")
+        else:
+            print(f"ok in {elapsed:.1f}s")
+
+    print("\nThe offline Norwegian voice works from here. If reads still fail "
+          "in sr, quit every sr window and reopen it so the daemon restarts.")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--self-test" in sys.argv[1:]:
+        rest = [a for a in sys.argv[1:] if a != "--self-test"]
+        sys.exit(self_test(voice=rest[0] if rest else None))
     main()

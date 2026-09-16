@@ -1,5 +1,6 @@
 import contextlib
 import importlib.util
+import os
 import pathlib
 import unittest
 import unittest.mock
@@ -365,3 +366,82 @@ class NamedFailureTests(unittest.TestCase):
             with server.during("generating Norwegian speech"):
                 raise server.EngineError("reference recording is too short")
         self.assertEqual(str(caught.exception), "reference recording is too short")
+
+
+class SelfTestResolutionTests(unittest.TestCase):
+    """`--self-test` has to diagnose the install sr is actually running.
+
+    Run by hand there is no supervisor to hand it the verified paths, so it
+    reads the same two sources sr reads — the install manifest and the
+    Settings → Voices override. An arch resolved any other way would describe
+    a different install than the one that is failing.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.home = tempfile.mkdtemp()
+        self.f5 = pathlib.Path(self.home, "Library/Application Support/sr/f5")
+        self.f5.mkdir(parents=True)
+        pathlib.Path(self.home, "Library/Preferences").mkdir(parents=True)
+
+        saved = {name: getattr(server, name) for name in
+                 ("MODEL_PATH", "F5_MODEL_PATH", "F5_VOCODER_PATH",
+                  "F5_VOICES_PATH", "F5_ARCH_JSON")}
+        self.addCleanup(lambda: [setattr(server, k, v) for k, v in saved.items()])
+        for name in saved:
+            setattr(server, name, "")
+        patcher = unittest.mock.patch.dict(os.environ, {"HOME": self.home})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_manifest(self, **arch):
+        import json
+        base = {"dim": 1024, "depth": 22, "heads": 16, "ff_mult": 2,
+                "text_dim": 512, "conv_layers": 4,
+                "text_mask_padding": False, "pe_attn_head": 1}
+        base.update(arch)
+        (self.f5 / "manifest.json").write_text(json.dumps({"arch": base}))
+
+    def _write_preference(self, **values):
+        import plistlib
+        with open(pathlib.Path(self.home, "Library/Preferences",
+                               "com.patrickellis.sr.plist"), "wb") as f:
+            plistlib.dump(values, f)
+
+    def test_paths_default_to_the_install_layout(self):
+        self._write_manifest()
+        with contextlib.redirect_stdout(None):
+            server._self_test_paths()
+        self.assertTrue(server.F5_MODEL_PATH.endswith("/sr/f5/model"))
+        self.assertTrue(server.F5_VOCODER_PATH.endswith("/sr/f5/vocoder"))
+        self.assertTrue(server.F5_VOICES_PATH.endswith("/sr/f5/voices"))
+
+    def test_settings_override_beats_the_manifest(self):
+        import json
+        self._write_manifest()
+        self._write_preference(f5Variant="f5tts_v1_base")
+        with contextlib.redirect_stdout(None):
+            server._self_test_paths()
+        arch = json.loads(server.F5_ARCH_JSON)
+        self.assertIs(arch["pe_attn_head"], None)
+        self.assertTrue(arch["text_mask_padding"])
+
+    def test_the_manifest_stands_when_settings_says_nothing(self):
+        import json
+        self._write_manifest(depth=22)
+        with contextlib.redirect_stdout(None):
+            server._self_test_paths()
+        arch = json.loads(server.F5_ARCH_JSON)
+        self.assertEqual(arch["pe_attn_head"], 1)
+        self.assertEqual(arch["depth"], 22)
+
+    def test_an_explicit_arch_is_never_second_guessed(self):
+        server.F5_ARCH_JSON = '{"depth": 7}'
+        self._write_manifest()
+        self._write_preference(f5Variant="f5tts_v1_base")
+        with contextlib.redirect_stdout(None):
+            server._self_test_paths()
+        self.assertEqual(server.F5_ARCH_JSON, '{"depth": 7}')
+
+    def test_a_missing_preferences_file_is_not_a_failure(self):
+        self.assertIsNone(server._preference("f5Variant"))
