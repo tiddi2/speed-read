@@ -20,16 +20,39 @@ import Testing
     // MARK: - Wire format
 
     @Test func requestEncodesAllFields() throws {
-        let request = KokoroRequest(
+        let request = LocalTTSRequest(
             token: "abc123", text: "Hello world.", voice: "bf_lily",
             speed: "1.0", lang_code: "b")
         let line = try KokoroWire.encode(request)
         #expect(!line.contains("\n"))
         for fragment in ["\"token\":\"abc123\"", "\"text\":\"Hello world.\"",
                          "\"voice\":\"bf_lily\"", "\"speed\":\"1.0\"",
-                         "\"lang_code\":\"b\""] {
+                         "\"lang_code\":\"b\"", "\"engine\":\"kokoro\""] {
             #expect(line.contains(fragment), "missing \(fragment) in \(line)")
         }
+    }
+
+    /// The daemon serves both engines over one socket, so the engine has to
+    /// be on the wire — and default to Kokoro, which is what a request from
+    /// before the Norwegian voice existed means.
+    @Test func requestDefaultsToKokoroAndCarriesTheChosenEngine() throws {
+        let f5 = LocalTTSRequest(
+            token: "t", text: "Hei.", voice: "min-stemme",
+            speed: "1.0", lang_code: "n", engine: "f5")
+        #expect(try KokoroWire.encode(f5).contains("\"engine\":\"f5\""))
+    }
+
+    /// Each engine has its own output version; a daemon answering with the
+    /// other engine's namespace must never reach playback or the cache.
+    @Test func engineOutputVersionsDoNotCrossOver() throws {
+        let f5Line = #"{"status":"ok","audio_file":"/tmp/gen_x/out.wav","output_version":"f5-tts-no-t1"}"#
+        #expect(try KokoroWire.decodeResponse(f5Line, expecting: F5Provider.cacheModelID)
+                == .ok(audioFile: "/tmp/gen_x/out.wav"))
+        #expect(try KokoroWire.decodeResponse(f5Line)
+                == .incompatible(audioFile: "/tmp/gen_x/out.wav"))
+        let kokoroLine = #"{"status":"ok","audio_file":"/tmp/gen_x/out.wav","output_version":"kokoro-82M-t2"}"#
+        #expect(try KokoroWire.decodeResponse(kokoroLine, expecting: F5Provider.cacheModelID)
+                == .incompatible(audioFile: "/tmp/gen_x/out.wav"))
     }
 
     @Test func responseParsesOK() throws {
@@ -55,6 +78,25 @@ import Testing
     @Test func responseOKWithoutFileIsError() throws {
         let response = try KokoroWire.decodeResponse(#"{"status": "ok"}"#)
         #expect(response == .error(message: "unknown daemon error"))
+    }
+
+    // MARK: - Child environment
+
+    /// uv reads UV_* from the environment as well as from uv.toml, and
+    /// `--no-config` only covers the files. A `UV_EXCLUDE_NEWER` left in a
+    /// login shell is enough to stop `uv venv` from starting at all.
+    @Test func uvSettingsFromTheUsersShellDoNotReachTheInstaller() {
+        let (kept, uvRemaining, path, extra) = KokoroTestSupport.scrubbedEnvironment()
+        #expect(uvRemaining == 0)
+        // PATH, HOME, HTTPS_PROXY and the one added variable — the three UV_
+        // entries are gone and nothing else was collateral.
+        #expect(kept == 4)
+        #expect(path == "/usr/bin")
+        #expect(extra == "1")
+    }
+
+    @Test func anExplicitVariableOverridesTheAmbientOne() {
+        #expect(KokoroTestSupport.scrubbedEnvironmentPrefersExplicitValues() == "1")
     }
 
     // MARK: - Paths

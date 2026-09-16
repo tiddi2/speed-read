@@ -97,6 +97,8 @@ final class VoicePreviewer: NSObject, ObservableObject {
 
     private static func message(for error: Error) -> String {
         guard let error = error as? TTSError else { return "Preview failed." }
+        // Offline failures name the real cause; see LocalVoices.failureMessage.
+        if let local = LocalVoices.failureMessage(for: error) { return local }
         switch error {
         case .missingAPIKey:
             return "No ElevenLabs API key — add one in Settings → Cost."
@@ -110,8 +112,6 @@ final class VoicePreviewer: NSObject, ObservableObject {
             return "Preview failed (HTTP \(status))."
         case .invalidAudio:
             return "ElevenLabs returned invalid audio."
-        case .network(let detail) where detail.hasPrefix("kokoro"):
-            return "The offline voice is unavailable."
         case .network:
             return "Could not reach ElevenLabs."
         case .budgetExceeded:

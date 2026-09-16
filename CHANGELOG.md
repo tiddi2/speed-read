@@ -2,6 +2,131 @@
 
 ## Unreleased
 
+- **Norwegian reads offline.** Kokoro has no Norwegian voice, so until now a
+  Norwegian selection always went to ElevenLabs and was refused outright in
+  Local-Only mode. Settings → General now offers a second, independent
+  download — an [F5-TTS checkpoint trained on
+  Norwegian](https://huggingface.co/akhbar/F5_Norwegian), run through
+  `f5-tts-mlx` in the same venv, the same supervised daemon and the same 0600
+  socket as Kokoro. Install either voice, both, or neither; a daemon starts
+  with whatever is there, and loads the Norwegian model only when a Norwegian
+  read actually arrives.
+
+  F5-TTS is a zero-shot cloner rather than a model with baked-in speakers: it
+  reads in the voice of a short reference recording. So a Norwegian offline
+  voice in sr *is* a recording — the sample the model repo ships, if it ships
+  one, plus any you add yourself under Settings → Voices. sr converts whatever
+  you pick to the 24 kHz mono the model wants, keeps only that copy, and never
+  sends it anywhere. The transcript you type has to match the recording word
+  for word; that pairing is how F5 lines a voice up with text.
+
+  Two details worth knowing. The install resolves the model repo's layout
+  rather than assuming it — a community fine-tune names its checkpoint
+  whatever it likes, and may ship `.pt` instead of `.safetensors` — then
+  records the commit it resolved and the SHA-256 of every file it wrote, and
+  re-checks that record on each launch. `make pin-f5-model` prints those
+  values as Swift constants to freeze the model to one commit for good. And
+  because the two F5-TTS architectures share every tensor shape, a checkpoint
+  cannot be inspected to tell which it is: sr goes by what the repo's config
+  declares, and Settings → Voices has a one-click switch for when Norwegian
+  comes out as babble rather than speech.
+
+  One thing to do after updating, if you already had the English offline
+  voice: the shared dependency lock gained `f5-tts-mlx`, so the existing
+  install no longer matches it and Settings → General offers **Update English
+  Voice Runtime…**. Click it once — the Kokoro model is already in the
+  Hugging Face cache, so it rebuilds the environment rather than
+  re-downloading anything. Until then, English reads fall back to the cloud.
+
+- Setting up a Norwegian voice is now a guided recording rather than a file
+  picker. **Settings → Voices → Record a Voice…** gives you a Norwegian
+  sentence to read, meters the input while you read it, plays the take back,
+  and then has the model read a *different* sentence in the new voice — the
+  only step that actually answers whether the voice is any good. Re-recording
+  replaces the voice rather than stacking up beside it.
+
+  The reason for a wizard rather than two text fields: F5 conditions on a
+  recording *and* its transcript, and the two have to agree word for word.
+  Asking someone to type out what they just said is both work and the likeliest
+  way to end up with a pairing that is subtly wrong — which does not fail, it
+  quietly degrades every read afterwards. Supplying the script inverts that, so
+  the transcript is exact by construction.
+
+  The three scripts are chosen to put the awkward sounds in the reader's mouth
+  (æ, ø, å, the *kj* and *skj* clusters) and to run six to ten seconds at an
+  unhurried pace. Recording captures straight to the 24 kHz mono the model
+  conditions on, so what you hear back is what the model hears. A take that is
+  too short, too quiet or clipped is called out before you keep it, since that
+  is the last moment anyone can do anything about it. Microphone permission is
+  asked for once; the clip stays on the Mac. Adding a voice from a file is
+  still there for a clip you already have.
+
+- A model repo that ships no `vocab.txt` no longer stops the install.
+  akhbar/F5_Norwegian does not ship one, and the installer treated that as
+  fatal — but most F5 trainings use the stock character vocabulary unchanged,
+  and a repo that never changed it often does not bother to include it. sr now
+  falls back to F5-TTS's own vocabulary, pinned by content hash rather than by
+  commit, since what matters is the bytes.
+
+  Falling back is only safe if it can be checked, so it is: the checkpoint's
+  text-embedding size is the vocabulary size it was trained with, and sr reads
+  it from the safetensors header — one short read rather than loading 1.4 GB —
+  and refuses a vocabulary that does not match. A wrong vocabulary does not
+  fail at synthesis time, it produces confident nonsense, so this is the only
+  point where it can be caught. The refusal names both numbers, and points at
+  `~/Library/Application Support/sr/f5/vocab-override.txt` for a vocabulary
+  obtained some other way — from the repo's Community tab, say.
+
+- An offline-voice install no longer inherits the user's uv settings. uv reads
+  `UV_*` from the environment as well as from `uv.toml`, and sr passed its
+  whole environment through — so a `UV_EXCLUDE_NEWER` left in a login shell
+  made `uv venv` refuse to start, and the install died before creating
+  anything. `--no-config` covers the files but not the variables, so the
+  installer now strips `UV_*` from every child process as well. The quieter
+  case matters more than the noisy one: a stray `UV_INDEX_URL` would have
+  resolved the pinned closure from somewhere else instead of failing outright.
+
+- Installing an offline voice now shows what it is doing, and says so when it
+  fails. The Norwegian model is a 1.4 GB download and the only feedback was a
+  spinner with a fixed caption, which looks the same at 2% as at 98% as at
+  hung. `sr_f5_fetch.py` now reports bytes as they land — huggingface_hub
+  offers no byte callback, so it watches the partial file in the hub cache,
+  which works whichever download backend is in play — and Settings draws a real
+  progress bar with a percentage.
+
+  More importantly, a failed install was invisible. The status label cleared,
+  the button came back looking untouched, and the reason went to the same
+  transient banner used for a read that went wrong mid-sentence — on screen for
+  a moment, gone before it could be read. The most likely failure by far is
+  having no `uv` installed, which fails in well under a second, so in practice
+  the install appeared to do nothing at all. The error now stays under the
+  button until the next attempt, and is selectable, because the useful ones
+  name a command to run.
+
+  Both progress and failures also appear in the menu bar panel, which is what
+  stays visible once the Settings window is closed — and a download this size
+  is exactly the thing you close the window and walk away from.
+
+- A failed signing-identity setup no longer aborts `make update`, and says what
+  went wrong when it does fail. `setup-signing.sh` judged its two certificate
+  import routes by exit status, but a PKCS#12 that macOS accepts without
+  pairing the key to the certificate exits 0 and leaves no identity — so the
+  fallback import never ran, and the script gave up with a bare "could not
+  create the sr-dev identity" and no hint which half was missing. Both routes
+  are now judged by what they leave in the keychain, and their output is shown
+  when neither works.
+
+  It also self-signs into a chicken-and-egg: a fresh self-signed certificate is
+  not valid for code signing until something trusts it, and the existence check
+  lists only *valid* identities — while `trust_certificate()` ran only after
+  that check had already passed, so it could never rescue the one case it was
+  written for. Trust is now applied before giving up.
+
+  And because the script's own message says a failure means "builds stay ad-hoc
+  signed", `install` and `update` no longer stop on it: they warn and carry on,
+  which is what that message promises. `make setup-signing` on its own still
+  exits non-zero, so the failure is still visible when you ask for it directly.
+
 - Accessibility and Keychain access no longer reset on every `make update`.
   macOS keys the Accessibility (TCC) grant and a Keychain item's ACL on an app's
   code signature, and with no certificate on the machine `codesign` signs

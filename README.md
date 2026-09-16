@@ -2,14 +2,15 @@
 
 **Select text in any Mac app, press a hotkey, hear it read aloud in a state-of-the-art AI voice.**
 
-sr is a privacy-first text-to-speech utility for macOS. It lives in your menu bar, reads whatever you select — articles, PDFs, emails, docs — using ElevenLabs cloud voices or a fully offline local model, at any speed from 0.5× to 3× with pitch preserved. Every byte that leaves your machine is explicit, minimal, and controllable: no telemetry, no content in logs, cloud history auto-deleted after every read, and a Local-Only mode where text never leaves the Mac at all.
+sr is a privacy-first text-to-speech utility for macOS. It lives in your menu bar, reads whatever you select — articles, PDFs, emails, docs — using ElevenLabs cloud voices or a fully offline local model in either language, at any speed from 0.5× to 3× with pitch preserved. Every byte that leaves your machine is explicit, minimal, and controllable: no telemetry, no content in logs, cloud history auto-deleted after every read, and a Local-Only mode where text never leaves the Mac at all.
 
 ## Features
 
 - **Read anything, anywhere** — a global hotkey per language (default ⌥A English, ⌥⇧A Norwegian) speaks the current selection in Safari, Chrome, Preview PDFs, VS Code, Slack, Mail, Terminal. Accessibility-API capture first; clipboard fallback restores your clipboard byte-for-byte.
-- **One language per hotkey, never a third** — each language has its own voice and model, and the language is pinned on the request (`language_code`) instead of being detected from the text. Norwegian is cloud-only: the offline voice has no Norwegian, so it is never substituted.
+- **One language per hotkey, never a third** — each language has its own voice and model, and the language is pinned on the request (`language_code`) instead of being detected from the text. Each language also has its own offline model, downloaded separately, so a wrong-language voice is never substituted for a missing one.
+- **Offline in Norwegian too** — Kokoro speaks English; Norwegian reads offline through an [F5-TTS checkpoint trained on Norwegian](https://huggingface.co/akhbar/F5_Norwegian). F5 is a zero-shot cloner, so a Norwegian offline voice is a short reference recording you point sr at — it reads new text in that voice, on your Mac, for free.
 - **Fully rebindable** — every hotkey (speak, clipboard, pause, stop, ±sentence, ±5 s, restart, speed) is configurable in Settings → Shortcuts.
-- **Top-tier voices, auditioned before you pick one** — ElevenLabs (Flash v2.5 / Turbo / Multilingual v2 / v3) with your account's full voice list, or the local Kokoro model (free, offline, Apple Silicon). Every voice in Settings has a play button, and the sample is synthesized with that language's own model and language lock — so a Norwegian voice is auditioned in Norwegian, not in a canned English demo clip.
+- **Top-tier voices, auditioned before you pick one** — ElevenLabs (Flash v2.5 / Turbo / Multilingual v2 / v3) with your account's full voice list, or the local models (free, offline, Apple Silicon). Every voice in Settings has a play button, and the sample is synthesized with that language's own model and language lock — so a Norwegian voice is auditioned in Norwegian, not in a canned English demo clip.
 - **Custom pronunciations, per language** — teach sr the names, acronyms and loan words it gets wrong. Respellings ("Nguyen" → "Nwin") are applied on your Mac, so they work on every model and with the offline voice and never leave the machine; IPA / CMU phoneme entries are uploaded as an ElevenLabs pronunciation dictionary. Each entry can be heard both ways — as it sounds now, and as your rule would have it — before you keep it.
 - **Instant, pitch-perfect speed** — 0.5×–3.0× applied client-side with time-domain (WSOLA) stretching. Changing speed never re-generates audio and never costs credits.
 - **Full transport** — play/pause, ±1 sentence, ±5 s seek, restart, stop, live progress, from the menu bar panel or the keyboard.
@@ -24,8 +25,8 @@ sr is a privacy-first text-to-speech utility for macOS. It lives in your menu ba
 
 - macOS 14+ on Apple Silicon
 - Swift 6 toolchain (Xcode Command Line Tools are enough: `xcode-select --install`)
-- An [ElevenLabs](https://elevenlabs.io) API key for cloud voices (free tier works), and/or ~330 MB of disk for the offline voice
-- [`uv`](https://docs.astral.sh/uv/) only if you install the offline voice
+- An [ElevenLabs](https://elevenlabs.io) API key for cloud voices (free tier works), and/or disk for the offline voices (~330 MB English, ~1.4 GB Norwegian)
+- [`uv`](https://docs.astral.sh/uv/) only if you install an offline voice
 
 ## Install
 
@@ -39,7 +40,7 @@ Then, one-time setup:
 
 1. **Grant Accessibility** when prompted (System Settings → Privacy & Security → Accessibility → enable **sr**). This is what lets sr read your selection; the hotkey itself works without it. You are asked once: sr is signed with a stable local identity, so the grant survives later `make update`s. (If an old ad-hoc build left a dead **sr** row behind and capture stays broken, `make reset-permissions` clears them and re-asks.)
 2. **Add your ElevenLabs key**: menu bar → waveform icon → Settings… → Cost → paste key → Save. It is stored only in the macOS Keychain. Recommended: create a dedicated key scoped to *Text-to-Speech + User Read*, and opt out of training under ElevenLabs → Terms & Privacy → Data Use.
-3. *(Optional, for offline use)* click **Install Local Voice (Kokoro, ~330 MB)** in Settings → General. The Python version and full dependency closure are pinned and hash-verified; the model revision and behavior-defining files are checksum-verified too.
+3. *(Optional, for offline use)* install a voice in Settings → General — **English (Kokoro, ~330 MB)**, **Norwegian (F5-TTS, ~1.4 GB)**, or both. The Python version and full dependency closure are pinned and hash-verified. Kokoro's model revision and behavior-defining files are checksum-verified against compiled-in pins; the Norwegian model pins the commit it resolves at install time and verifies every file it writes (see [The Norwegian offline voice](#the-norwegian-offline-voice)).
 4. *(Optional)* System Settings → General → Login Items → **+** → `/Applications/sr.app` to start at login.
 
 ## Usage
@@ -56,6 +57,7 @@ Then, one-time setup:
 | Speak clipboard | Menu → Speak Clipboard → Norwegian / English |
 | Change hotkeys | Settings (⌘,) → Shortcuts |
 | Voice & model per language | Settings (⌘,) → Voices — ▶ on a row plays a sample |
+| Add a Norwegian offline voice | Settings → Voices → Norwegian → **Record a Voice…** |
 | Custom pronunciations | Settings → Pronunciation (per language, with before/after playback) |
 | Backend | Settings → General: **Auto** (cloud, falls back to local), **Cloud**, **Local 🔒** |
 
@@ -99,12 +101,77 @@ language is sent to ElevenLabs as `language_code`, which pins both the model and
 its text normalization — so a Norwegian selection is never read as English or
 anything else. Only **Flash v2.5** and **Turbo v2.5** accept that parameter;
 Settings → Voices warns if you pick Multilingual v2 or v3, which detect the
-language from the text instead. Kokoro has no Norwegian voice, so Norwegian
-reads always use ElevenLabs and are refused (not substituted) in Local-Only mode.
+language from the text instead. Offline, the same rule holds by construction:
+each language has its own model, and a language whose model is not installed is
+refused rather than read with the other one's voice.
 
 sr's own text normalization follows the same language: the words it spells out
 before the voice ever sees them — "50 %", `f.eks.`, `∧` — are Norwegian in a
 Norwegian read and English in an English one.
+
+### The Norwegian offline voice
+
+Kokoro speaks nine languages and Norwegian is not one of them, so Norwegian
+reads offline through a different model: an [F5-TTS checkpoint trained on
+Norwegian](https://huggingface.co/akhbar/F5_Norwegian), run with
+[`f5-tts-mlx`](https://pypi.org/project/f5-tts-mlx/). Install it in
+Settings → General; it is a separate ~1.4 GB download from Kokoro's and either
+can be installed without the other. Both run in the same venv, under the same
+supervised daemon, over the same 0600 socket — one Python process, not two —
+and the Norwegian model is loaded only when a Norwegian read arrives.
+
+**A voice is a recording.** F5-TTS is a zero-shot cloner: it has no baked-in
+speakers, and reads new text in the voice of a short reference clip it is
+conditioned on. So Settings → Voices → Norwegian lists recordings rather than
+names.
+
+**Record a Voice…** walks you through making one, and takes about a minute. It
+gives you a Norwegian sentence to read, shows a level meter while you read it,
+plays the take back so you can redo it, and then has the model read a
+*different* sentence in your new voice — which is the only thing that really
+answers whether the voice is any good. The sentence it gives you is also saved
+as the transcript, so the recording and its text agree exactly: that pairing is
+how F5 lines a voice up with text, and getting it slightly wrong is the usual
+way a reference clip goes quietly bad. Recording asks for microphone permission
+once, and nothing leaves the Mac.
+
+**Add from a File…** is there for a clip you already have — your own recording,
+or an openly licensed one such as [`NbAiLab/nb-librivox`](https://huggingface.co/datasets/NbAiLab/nb-librivox)
+(CC0, Norwegian, built for TTS). Then you supply the transcript yourself, word
+for word.
+
+Either way sr converts the audio to the 24 kHz mono the model conditions on,
+trims it to about 12 seconds, and keeps only that copy under
+`~/Library/Application Support/sr/f5/voices/`. Three to ten seconds of clear
+speech with no background noise works best. If the model repo ships a sample
+clip, the install imports that as a starting voice too.
+
+**Pinning.** Kokoro's revision and file hashes are compiled into sr, because
+they could be resolved when the code was written. The Norwegian model is a
+community fine-tune that names no stable revision and follows no file-naming
+convention, so its installer resolves the layout at install time — checkpoint,
+vocabulary, any config, any sample — verifies each download against
+huggingface.co's own SHA-256 for it, and records the commit it resolved plus a
+hash of every file it wrote. A repo that never changed the stock character
+vocabulary often does not ship one; sr then falls back to F5-TTS's own,
+pinned by content hash, and checks it against the checkpoint's text embedding
+so a vocabulary of the wrong size is refused rather than used. If that check
+fails and the right vocabulary is posted in the model repo's Community tab,
+save it to `~/Library/Application Support/sr/f5/vocab-override.txt` and
+install again. That record is re-checked on each launch. It is a
+weaker guarantee than Kokoro's until you make it stronger, which takes one
+command: `make pin-f5-model` prints the resolved commit as Swift constants to
+paste into `Sources/SRCore/F5/F5Installer.swift`, after which every install
+fetches that exact commit and refuses anything else.
+
+**If it comes out as babble.** F5-TTS Base and F5-TTS v1 Base use identical
+tensor shapes and differ only in how text padding is masked and where rotary
+embeddings are applied. A checkpoint therefore cannot be inspected to tell
+which one it is: sr goes by what the repo's config declares, and falls back to
+Base. Loading it the wrong way produces noise rather than an error, so
+Settings → Voices has an **Architecture** switch — flip it, and the next read
+reloads the model the other way. Cached Norwegian audio is keyed on the choice,
+so nothing generated the wrong way is ever replayed.
 
 CLI (same binary):
 
@@ -112,6 +179,9 @@ CLI (same binary):
 /Applications/sr.app/Contents/MacOS/sr --speak article.md      # or "-" for stdin
 /Applications/sr.app/Contents/MacOS/sr --speak artikkel.md --lang no
 /Applications/sr.app/Contents/MacOS/sr --speak-clipboard --local
+# Install an offline voice without opening Settings:
+/Applications/sr.app/Contents/MacOS/sr --install-kokoro      # English
+/Applications/sr.app/Contents/MacOS/sr --install-norwegian   # Norwegian
 # Explicitly bypass cloud budget/large-read gates for one invocation:
 /Applications/sr.app/Contents/MacOS/sr --speak article.md --override-cost-controls
 ```
@@ -132,8 +202,8 @@ CLI (same binary):
 | Host | When |
 |---|---|
 | `api.elevenlabs.io` | Cloud synthesis, voice list, credits, history deletion, phoneme pronunciation dictionaries |
-| `huggingface.co` | Only during the explicit local-voice install |
-| `github.com` / PyPI | Only during the explicit local-voice install (pinned Python packages) |
+| `huggingface.co` | Only during an explicit offline-voice install |
+| `github.com` / PyPI | Only during an explicit offline-voice install (pinned Python packages, and the stock F5-TTS vocabulary when the model repo omits it) |
 
 Local synthesis runs in a supervised daemon bound to a Unix socket (0600) with per-launch auth, bounded pre-auth connections, request-size limits, verified-model-only startup, and parent/idle watchdogs — no network listener, ever.
 
@@ -163,6 +233,7 @@ make run       # build + launch from dist/
 make install   # first install: build + replace /Applications/sr.app
 make update    # routine update: pull + build + swap the bundle + relaunch
 
+make pin-f5-model       # freeze the Norwegian model to the commit you installed
 make setup-signing      # create the local signing identity (automatic; see below)
 make signing-status     # check that identity still signs
 make reset-permissions  # clear sr's stale Accessibility grants, then re-approve once
@@ -243,12 +314,13 @@ The app icon is generated rather than checked in as images: `python3 scripts/mak
 (needs Pillow) redraws `resources/sr.icns` from the parameters at the top of that
 script, and `build-app.sh` copies it into the bundle.
 
-Layout: `Sources/SRCore` (engine: normalizer, providers, cache, cost, privacy), `Sources/sr` (menu bar app, playback, capture, CLI), `daemon/` (local TTS daemon plus its hashed dependency lock), `Tests/` (core, app CLI, daemon, and parity tests). `PROGRESS.md` tracks the build log and roadmap (Shortcuts, MCP server, URL scheme, notarized releases).
+Layout: `Sources/SRCore` (engine: normalizer, providers, cache, cost, privacy — with `Kokoro/` and `F5/` for the two offline stacks), `Sources/sr` (menu bar app, playback, capture, CLI), `daemon/` (local TTS daemon, the Norwegian model fetcher, and their hashed dependency lock), `Tests/` (core, app CLI, daemon, and parity tests). `PROGRESS.md` tracks the build log and roadmap (Shortcuts, MCP server, URL scheme, notarized releases).
 
 ## Credits
 
 - [Speak11](https://github.com/smcantab/speak11) (Unlicense) — the reference implementation whose text-normalization rules, capture strategy, and fallback design sr ports and builds on. Read it; it's good.
-- [Kokoro](https://huggingface.co/mlx-community/Kokoro-82M-bf16) via [mlx-audio](https://github.com/Blaizzy/mlx-audio) — the local voice.
+- [Kokoro](https://huggingface.co/mlx-community/Kokoro-82M-bf16) via [mlx-audio](https://github.com/Blaizzy/mlx-audio) — the English offline voice.
+- [F5_Norwegian](https://huggingface.co/akhbar/F5_Norwegian) (AFL-3.0), built on [F5-TTS](https://github.com/SWivid/F5-TTS), via [f5-tts-mlx](https://github.com/lucasnewman/f5-tts-mlx) (MIT) and its [Vocos](https://huggingface.co/lucasnewman/vocos-mel-24khz) vocoder — the Norwegian offline voice.
 - [KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts) (MIT) — hotkey registration.
 
 ## License

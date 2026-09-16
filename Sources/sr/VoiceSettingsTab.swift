@@ -1,5 +1,7 @@
+import AppKit
 import SRCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Voices — one profile per language (F-10), and a way to hear them.
 ///
@@ -13,6 +15,13 @@ struct VoiceSettingsTab: View {
     @EnvironmentObject var state: AppState
     @State private var language: SpeechLanguage = .english
     @State private var search = ""
+    // Draft state for a new Norwegian reference recording.
+    @State private var isAddingVoice = false
+    @State private var newVoiceName = ""
+    @State private var newVoiceTranscript = ""
+    @State private var newVoiceURL: URL?
+    @State private var addVoiceError: String?
+    @State private var isRecordingVoice = false
 
     var body: some View {
         Form {
@@ -56,6 +65,10 @@ struct VoiceSettingsTab: View {
         .onChange(of: language) { _, _ in
             search = ""
             state.preview.stop()
+            resetVoiceDraft()
+        }
+        .sheet(isPresented: $isRecordingVoice) {
+            RecordVoiceSheet().environmentObject(state)
         }
     }
 
@@ -137,34 +150,142 @@ struct VoiceSettingsTab: View {
 
     // MARK: - Offline voices
 
+    /// Kokoro ships a fixed voice list; the Norwegian model reads in the
+    /// voice of a recording you supply, so the same section has to present
+    /// both a chooser and an editor.
     @ViewBuilder
     private var offlineVoices: some View {
-        let localVoices = KokoroProvider.presetVoices(for: language)
-        if localVoices.isEmpty {
-            Text("No offline voice — \(language.displayName) is cloud-only.")
-                .font(.caption).foregroundStyle(.secondary)
-        } else if !state.kokoroInstalled {
-            Text("Install the local voice in Settings → General to use sr offline.")
+        if !LocalVoices.isInstalled(for: language) {
+            Text(language.localEngine == .f5
+                 ? "The Norwegian offline voice is not installed — add it in Settings → General."
+                 : "Install the English offline voice in Settings → General to use sr offline.")
                 .font(.caption).foregroundStyle(.secondary)
         } else {
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(localVoices) { voice in
-                        VoiceRow(
-                            name: voice.name,
-                            isSelected: voice.id == state.localVoiceID(for: language),
-                            isLoading: state.preview.isLoading(
-                                AppState.PreviewToken.localVoice(voice.id, language)),
-                            isPlaying: state.preview.isPlaying(
-                                AppState.PreviewToken.localVoice(voice.id, language)),
-                            auditionHelp: "Hear \(voice.name) (offline, free)",
-                            select: { state.setLocalVoiceID(voice.id, for: language) },
-                            audition: { state.previewLocalVoice(voice.id, language: language) })
+            let localVoices = language.localEngine == .f5
+                ? state.f5Voices.map(\.asVoice)
+                : LocalVoices.available(for: language)
+            if localVoices.isEmpty {
+                Text("No voice yet. Record one — sr gives you a sentence to read, then reads back in your voice. It takes about a minute and never leaves this Mac.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(localVoices) { voice in
+                            VoiceRow(
+                                name: voice.name,
+                                isSelected: voice.id == state.localVoiceID(for: language),
+                                isLoading: state.preview.isLoading(
+                                    AppState.PreviewToken.localVoice(voice.id, language)),
+                                isPlaying: state.preview.isPlaying(
+                                    AppState.PreviewToken.localVoice(voice.id, language)),
+                                auditionHelp: "Hear \(voice.name) (offline, free)",
+                                select: { state.setLocalVoiceID(voice.id, for: language) },
+                                audition: { state.previewLocalVoice(voice.id, language: language) },
+                                remove: language.localEngine == .f5
+                                    ? { state.removeF5Voice(id: voice.id) } : nil)
+                        }
                     }
                 }
+                .frame(height: 88)
             }
-            .frame(height: 88)
+            if language.localEngine == .f5 {
+                referenceVoiceEditor
+                architecturePicker
+            }
         }
+    }
+
+    // MARK: - Reference recordings (Norwegian)
+
+    @ViewBuilder
+    private var referenceVoiceEditor: some View {
+        if !isAddingVoice {
+            HStack(spacing: 10) {
+                Button {
+                    state.preview.stop()
+                    isRecordingVoice = true
+                } label: {
+                    Label("Record a Voice…", systemImage: "mic")
+                }
+                Button("Add from a File…") {
+                    resetVoiceDraft()
+                    isAddingVoice = true
+                }
+            }
+        }
+        if isAddingVoice {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Button("Choose Recording…") { chooseRecording() }
+                    Text(newVoiceURL?.lastPathComponent ?? "No file chosen")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                TextField("Voice name", text: $newVoiceName)
+                TextField("Exactly what is said in the recording",
+                          text: $newVoiceTranscript, axis: .vertical)
+                    .lineLimit(2...4)
+                if let addVoiceError {
+                    Label(addVoiceError, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                Text("Any audio file works — sr converts it to the 24 kHz mono the model needs and keeps only that copy. The transcript has to match the recording word for word: it is how F5 lines the voice up with the text.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Add Voice") { addVoice() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(newVoiceURL == nil)
+                    Button("Cancel") { resetVoiceDraft() }
+                }
+            }
+        }
+    }
+
+    /// The escape hatch for a checkpoint that loads but sounds wrong.
+    @ViewBuilder
+    private var architecturePicker: some View {
+        Picker("Architecture", selection: $state.f5Variant) {
+            ForEach(F5Installer.Variant.allCases) { variant in
+                Text(variant.displayName).tag(variant)
+            }
+        }
+        Text("The two F5-TTS architectures use identical tensor shapes, so the downloaded checkpoint cannot say which one it is — sr goes by what the model repo declares. If Norwegian comes out as babble rather than speech, switch this and try again.")
+            .font(.caption).foregroundStyle(.secondary)
+    }
+
+    private func chooseRecording() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.prompt = "Choose"
+        panel.message = "Pick 3–10 seconds of clear Norwegian speech."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        newVoiceURL = url
+        addVoiceError = nil
+        if newVoiceName.trimmingCharacters(in: .whitespaces).isEmpty {
+            newVoiceName = url.deletingPathExtension().lastPathComponent
+        }
+    }
+
+    private func addVoice() {
+        guard let url = newVoiceURL else { return }
+        switch state.addF5Voice(name: newVoiceName, audio: url,
+                                transcript: newVoiceTranscript) {
+        case .success:
+            resetVoiceDraft()
+        case .failure(let message):
+            addVoiceError = message
+        }
+    }
+
+    private func resetVoiceDraft() {
+        isAddingVoice = false
+        newVoiceName = ""
+        newVoiceTranscript = ""
+        newVoiceURL = nil
+        addVoiceError = nil
     }
 
     // MARK: - Bindings
@@ -191,6 +312,8 @@ private struct VoiceRow: View {
     let auditionHelp: String
     let select: () -> Void
     let audition: () -> Void
+    /// Only reference voices can be removed — Kokoro's are part of the model.
+    var remove: (() -> Void)? = nil
 
     @State private var hovering = false
 
@@ -202,6 +325,17 @@ private struct VoiceRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 8)
+            if let remove {
+                Button(action: remove) {
+                    Image(systemName: "minus.circle")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Remove this voice")
+                // Hidden rather than absent, for the same reason as the
+                // checkmark below: an appearing button would nudge the name.
+                .opacity(hovering ? 1 : 0)
+            }
             Image(systemName: "checkmark")
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(Color.accentColor)

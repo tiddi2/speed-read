@@ -53,7 +53,8 @@ public actor KokoroDaemonSupervisor {
             return
         }
 
-        guard KokoroInstaller(paths: paths).isInstalled else {
+        guard KokoroInstaller(paths: paths).isInstalled
+                || F5Runtime.shared.isInstalled else {
             throw SupervisorError.notInstalled
         }
 
@@ -92,34 +93,47 @@ public actor KokoroDaemonSupervisor {
         p.executableURL = paths.venvPython
         p.arguments = [paths.daemonScript.path, "--managed"]
         var env = ["SR_DAEMON_TOKEN": token]
-        // P-12: hand the daemon the installer's hash-verified snapshot so it
-        // runs exactly the verified bytes, not whatever the HF cache resolves
-        // the model ID to. Passed via a stable "Kokoro-82M-bf16" symlink —
-        // mlx-audio derives the model TYPE from the basename, so the raw
-        // snapshot dir (named by revision hash) would not load. Missing/stale
-        // manifest → no env var → daemon falls back to the model ID.
         let fm = FileManager.default
-        let manifest: KokoroInstaller.Manifest
-        do {
-            manifest = try KokoroInstaller(paths: paths).loadValidatedManifest()
-        } catch {
+
+        // P-12: hand the daemon the installer's hash-verified paths so it
+        // runs exactly the verified bytes, not whatever a repo id resolves to
+        // on the day. Either engine may be absent — a user can install the
+        // English voice, the Norwegian one, or both — so each block is
+        // conditional and at least one must succeed.
+        if let manifest = try? KokoroInstaller(paths: paths).loadValidatedManifest() {
+            // Passed via a stable "Kokoro-82M-bf16" symlink — mlx-audio
+            // derives the model TYPE from the basename, so the raw snapshot
+            // dir (named by revision hash) would not load.
+            //
+            // `fileExists` follows symlinks and returns false for a dangling
+            // one. Ask for the link destination first so stale cache cleanup
+            // cannot strand an invisible link that blocks recreation.
+            if (try? fm.destinationOfSymbolicLink(atPath: paths.modelLink.path)) != nil {
+                try fm.removeItem(at: paths.modelLink)
+            } else if fm.fileExists(atPath: paths.modelLink.path) {
+                throw SupervisorError.spawnFailed("model link path is not a symlink")
+            }
+            try fm.createSymbolicLink(
+                at: paths.modelLink,
+                withDestinationURL: URL(fileURLWithPath: manifest.snapshotPath))
+            guard fm.fileExists(atPath: paths.modelLink.path) else {
+                throw SupervisorError.spawnFailed("verified model link could not be created")
+            }
+            env["SR_MODEL_PATH"] = paths.modelLink.path
+        }
+
+        let f5 = F5Runtime.shared
+        if f5.isInstalled, let arch = f5.arch() {
+            try? fm.createDirectory(at: f5.paths.voicesDir, withIntermediateDirectories: true)
+            env["SR_F5_MODEL_PATH"] = f5.paths.modelDir.path
+            env["SR_F5_VOCODER_PATH"] = f5.paths.vocoderDir.path
+            env["SR_F5_VOICES_PATH"] = f5.paths.voicesDir.path
+            env["SR_F5_ARCH"] = arch.environmentJSON
+        }
+
+        guard env["SR_MODEL_PATH"] != nil || env["SR_F5_MODEL_PATH"] != nil else {
             throw SupervisorError.notInstalled
         }
-        // `fileExists` follows symlinks and returns false for a dangling one.
-        // Ask for the link destination first so stale cache cleanup cannot
-        // strand an invisible link that blocks recreation.
-        if (try? fm.destinationOfSymbolicLink(atPath: paths.modelLink.path)) != nil {
-            try fm.removeItem(at: paths.modelLink)
-        } else if fm.fileExists(atPath: paths.modelLink.path) {
-            throw SupervisorError.spawnFailed("model link path is not a symlink")
-        }
-        try fm.createSymbolicLink(
-            at: paths.modelLink,
-            withDestinationURL: URL(fileURLWithPath: manifest.snapshotPath))
-        guard fm.fileExists(atPath: paths.modelLink.path) else {
-            throw SupervisorError.spawnFailed("verified model link could not be created")
-        }
-        env["SR_MODEL_PATH"] = paths.modelLink.path
         p.environment = ProcessInfo.processInfo.environment.merging(env) { _, new in new }
         p.standardInput = FileHandle.nullDevice
         p.standardOutput = FileHandle.nullDevice

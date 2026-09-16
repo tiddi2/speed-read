@@ -1,9 +1,8 @@
-import CryptoKit
 import Foundation
 
-/// Installs the local Kokoro stack: uv-managed venv with a pinned
-/// mlx-audio, the daemon script, and the model download with SHA-256
-/// verification (P-12).
+/// Installs the Kokoro (English) model on top of the shared local runtime,
+/// with SHA-256 verification (P-12). The venv, the pinned dependency
+/// closure and the daemon script belong to LocalRuntimeInstaller.
 public struct KokoroInstaller: Sendable {
     // ── Supply-chain pins (P-12), resolved 2026-07-06 ──
     /// PyPI: latest mlx-audio at pin time.
@@ -16,11 +15,13 @@ public struct KokoroInstaller: Sendable {
     /// P-12) — so install the exact wheel up front.
     public static let spacyModelWheel =
         "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
-    /// Python interpreter for the venv (uv downloads a standalone build
-    /// if the system lacks it — deterministic across machines).
-    public static let pythonVersion = "3.12.11"
-    public static let requirementsLockSHA256 =
-        "6af297636c93bca9fec1dc5fd1d8cbba9bedba962e158ce08b11600363c7f0b1"
+    /// The venv interpreter and dependency lock are shared with the
+    /// Norwegian voice; these forward to the runtime installer that owns them
+    /// so a manifest written here still records what was actually installed.
+    public static var pythonVersion: String { LocalRuntimeInstaller.pythonVersion }
+    public static var requirementsLockSHA256: String {
+        LocalRuntimeInstaller.requirementsLockSHA256
+    }
     /// huggingface.co model repo + immutable revision (main @ pin time).
     public static let modelRepo = "mlx-community/Kokoro-82M-bf16"
     public static let modelRevision = "a71e4d38b236d968966a2002c4c895dbd12b1c3c"
@@ -61,20 +62,18 @@ public struct KokoroInstaller: Sendable {
         self.paths = paths
     }
 
-    /// Installed = venv python + daemon script + verified manifest present.
+    /// The venv + daemon script Kokoro shares with the Norwegian voice.
+    private var runtime: LocalRuntimeInstaller { LocalRuntimeInstaller(paths: paths) }
+
+    /// Installed = shared runtime + verified Kokoro manifest present.
     public var isInstalled: Bool {
-        let fm = FileManager.default
-        return fm.isExecutableFile(atPath: paths.venvPython.path)
-            && fm.fileExists(atPath: paths.daemonScript.path)
-            && (try? loadValidatedManifest()) != nil
+        runtime.isInstalled && (try? loadValidatedManifest()) != nil
     }
 
-    /// A prior or damaged runtime exists but does not satisfy current pins.
+    /// A prior or damaged install exists but does not satisfy current pins.
     public var needsUpdate: Bool {
-        let fm = FileManager.default
-        return fm.isExecutableFile(atPath: paths.venvPython.path)
-            && fm.fileExists(atPath: paths.daemonScript.path)
-            && fm.fileExists(atPath: paths.manifest.path)
+        runtime.isInstalled
+            && FileManager.default.fileExists(atPath: paths.manifest.path)
             && !isInstalled
     }
 
@@ -112,34 +111,12 @@ public struct KokoroInstaller: Sendable {
     }
 
     /// Refresh the installed daemon script when the bundled one changed.
-    /// The daemon runs from the App Support copy made at install time —
-    /// without this, daemon fixes shipped in app updates never reach
-    /// existing installs.
     public func syncDaemonScript(from source: URL) {
-        guard isInstalled,
-              let bundled = try? Data(contentsOf: source) else { return }
-        let installed = try? Data(contentsOf: paths.daemonScript)
-        guard bundled != installed else { return }
-        do {
-            try bundled.write(to: paths.daemonScript, options: .atomic)
-            SRLog.event("kokoro.daemon_script_synced", [:])
-        } catch {
-            SRLog.error("kokoro.daemon_script_sync", ["error": String(describing: error)])
-        }
+        runtime.syncDaemonScript(from: source)
     }
 
     /// Locate the uv binary (PATH, then the usual install locations).
-    public static func findUV() -> URL? {
-        var candidates = (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":").map { String($0) + "/uv" }
-        candidates += [
-            NSHomeDirectory() + "/.local/bin/uv",
-            "/opt/homebrew/bin/uv",
-            "/usr/local/bin/uv",
-        ]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
-            .map { URL(fileURLWithPath: $0) }
-    }
+    public static func findUV() -> URL? { LocalRuntimeInstaller.findUV() }
 
     /// Run the full install. `daemonSourceURL` is the sr_tts_server.py to
     /// copy in (from the app bundle's resources or the repo's daemon/ dir).
@@ -170,51 +147,24 @@ public struct KokoroInstaller: Sendable {
         }
     }
 
-    struct InstallError: Error {
-        let message: String
-    }
-
     private func runInstall(
         daemonSourceURL: URL,
         requirementsLockURL: URL,
         progress: @Sendable (InstallProgress) -> Void
     ) async throws {
         let fm = FileManager.default
-        try fm.createDirectory(at: paths.base, withIntermediateDirectories: true)
 
-        guard let uv = Self.findUV() else {
-            throw InstallError(message:
-                "uv not found. Install it first: curl -LsSf https://astral.sh/uv/install.sh | sh")
+        // 1-3. shared venv, pinned dependency closure, daemon script
+        try await runtime.install(
+            daemonSourceURL: daemonSourceURL,
+            requirementsLockURL: requirementsLockURL
+        ) { step in
+            switch step {
+            case .creatingVenv: progress(.creatingVenv)
+            case .installingPackages: progress(.installingPackages)
+            }
         }
-
-        // 1. venv (pinned interpreter; uv fetches a standalone build if needed)
-        progress(.creatingVenv)
-        try await run(uv, [
-            "venv", "--clear", "--python", Self.pythonVersion, paths.venvDir.path,
-        ])
-        try Task.checkCancellation()
-
-        // 2. Fully resolved + hashed dependency closure. Refuse a modified
-        // bundled lock before letting uv execute any package code.
-        progress(.installingPackages)
         let lockHash = try Self.sha256(of: requirementsLockURL)
-        guard lockHash == Self.requirementsLockSHA256 else {
-            throw InstallError(message: "requirements lock checksum mismatch")
-        }
-        try await run(uv, [
-            "pip", "install",
-            "--python", paths.venvPython.path,
-            "--require-hashes",
-            "--requirements", requirementsLockURL.path,
-        ], timeout: 900)
-
-        try Task.checkCancellation()
-
-        // 3. daemon script
-        if fm.fileExists(atPath: paths.daemonScript.path) {
-            try fm.removeItem(at: paths.daemonScript)
-        }
-        try fm.copyItem(at: daemonSourceURL, to: paths.daemonScript)
 
         try Task.checkCancellation()
 
@@ -269,94 +219,14 @@ public struct KokoroInstaller: Sendable {
         ])
     }
 
-    /// Streaming SHA-256 (weights are ~327 MB — never load whole into RAM).
+    /// Streaming SHA-256, shared with the runtime installer.
     public static func sha256(of url: URL) throws -> String {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        while autoreleasepool(invoking: {
-            let chunk = handle.readData(ofLength: 4 << 20)
-            if chunk.isEmpty { return false }
-            hasher.update(data: chunk)
-            return true
-        }) {}
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        try LocalRuntimeInstaller.sha256(of: url)
     }
 
-    /// Run a subprocess, returning stdout. Throws with the stderr tail on
-    /// failure (package-manager output — content-free by nature).
-    @discardableResult
     private func run(
         _ executable: URL, _ arguments: [String], timeout: TimeInterval = 300
     ) async throws -> String {
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = arguments
-        let out = Pipe(), err = Pipe()
-        process.standardOutput = out
-        process.standardError = err
-        process.standardInput = FileHandle.nullDevice
-
-        // Arm the termination signal BEFORE run(): a handler assigned after
-        // an instant exec failure never fires, hanging the install forever.
-        // AsyncStream buffers the yield, so termination-before-await is safe.
-        let terminated = AsyncStream<Void> { cont in
-            process.terminationHandler = { _ in
-                cont.yield()
-                cont.finish()
-            }
-        }
-
-        try process.run()
-
-        let watchdog = Task {
-            try await Task.sleep(for: .seconds(timeout))
-            guard process.isRunning else { return }
-            process.terminate()
-            // SIGTERM escalation: a child ignoring it would hang the install.
-            try await Task.sleep(for: .seconds(5))
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-        }
-        defer { watchdog.cancel() }
-
-        // Drain pipes off the calling task so big outputs can't deadlock.
-        async let stdoutData = out.fileHandleForReading.readToEndAsync()
-        async let stderrData = err.fileHandleForReading.readToEndAsync()
-
-        // Cancelling the install (user quits mid-download) must kill the
-        // subprocess — uv/pip/python otherwise keep running to completion.
-        await withTaskCancellationHandler {
-            for await _ in terminated { break }
-        } onCancel: {
-            guard process.isRunning else { return }
-            process.terminate()
-            // Cancellation has its own short escalation deadline. Reusing
-            // the install timeout could keep AppKit in terminateLater for up
-            // to an hour if uv/python ignores SIGTERM.
-            Task.detached {
-                try? await Task.sleep(for: .seconds(5))
-                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-            }
-        }
-        try Task.checkCancellation()
-
-        let stdout = String(data: await stdoutData, encoding: .utf8) ?? ""
-        guard process.terminationStatus == 0 else {
-            let stderr = String(data: await stderrData, encoding: .utf8) ?? ""
-            throw InstallError(message:
-                "\(executable.lastPathComponent) \(arguments.first ?? "") failed (exit \(process.terminationStatus)): \(stderr.suffix(400))")
-        }
-        return stdout
-    }
-}
-
-extension FileHandle {
-    /// Non-blocking full read for subprocess pipes.
-    func readToEndAsync() async -> Data {
-        await withCheckedContinuation { cont in
-            DispatchQueue.global(qos: .utility).async {
-                cont.resume(returning: (try? self.readToEnd()) ?? Data())
-            }
-        }
+        try await runtime.run(executable, arguments, timeout: timeout)
     }
 }

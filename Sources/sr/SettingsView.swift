@@ -72,23 +72,33 @@ private struct GeneralSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section("Offline voice") {
-                if let installStatus = state.kokoroInstallStatus {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.small)
-                        Text(installStatus).font(.callout)
-                    }
-                } else if state.kokoroInstalled && !state.kokoroNeedsUpdate {
-                    Label("Kokoro installed", systemImage: "checkmark.circle")
-                        .foregroundStyle(.green)
-                } else {
-                    Button(state.kokoroNeedsUpdate
-                           ? "Update Local Voice Runtime…"
-                           : "Install Local Voice (Kokoro, ~330 MB)…") {
-                        state.installKokoro()
-                    }
-                }
-                Text("Kokoro speaks English only. Norwegian reads always use ElevenLabs, and are refused in Local-Only mode rather than read with an English voice.")
+            // One download per language: the two offline models are
+            // unrelated, and a user who only reads Norwegian should not have
+            // to fetch an English one (or the reverse) to go offline.
+            Section("Offline voices") {
+                OfflineVoiceRow(
+                    installStatus: state.kokoroInstallStatus,
+                    installError: state.kokoroInstallError,
+                    isInstalled: state.kokoroInstalled && !state.kokoroNeedsUpdate,
+                    installedLabel: "English (Kokoro) installed",
+                    installTitle: state.kokoroNeedsUpdate
+                        ? "Update English Voice Runtime…"
+                        : "Install English Voice (Kokoro, ~330 MB)…",
+                    install: { state.installKokoro() })
+
+                OfflineVoiceRow(
+                    installStatus: state.f5InstallStatus,
+                    installError: state.f5InstallError,
+                    isInstalled: state.f5Installed && !state.f5NeedsUpdate,
+                    installedLabel: "Norwegian (F5-TTS) installed",
+                    installTitle: state.f5NeedsUpdate
+                        ? "Update Norwegian Voice…"
+                        : "Install Norwegian Voice (F5-TTS, ~1.4 GB)…",
+                    install: { state.installF5Norwegian() },
+                    remove: state.f5Installed && state.f5InstallStatus == nil
+                        ? { state.uninstallF5Norwegian() } : nil)
+
+                Text("Each voice downloads its own model from huggingface.co, once, when you ask for it. Installing needs [uv](https://docs.astral.sh/uv/) and keeps running if you close this window. Kokoro speaks English with a fixed set of voices; the Norwegian model reads in the voice of a short recording you add under Voices. Removing the Norwegian model keeps your recordings.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -132,6 +142,72 @@ private struct GeneralSettings: View {
         case .auto: return "Cloud voices, local fallback if the cloud fails"
         case .cloud: return "ElevenLabs only"
         case .local: return "Nothing ever leaves this Mac"
+        }
+    }
+}
+
+/// One offline model: its install button, its progress, or the fact that it
+/// is already there. Both languages present identically — the difference
+/// between a fixed voice list and reference recordings belongs in Voices.
+///
+/// A multi-gigabyte download gets a real bar rather than a spinner, and a
+/// failure stays on screen. Both for the same reason: the install runs for
+/// minutes and the only thing worse than waiting is not knowing whether you
+/// are waiting or it already gave up.
+private struct OfflineVoiceRow: View {
+    let installStatus: InstallStatus?
+    var installError: String? = nil
+    let isInstalled: Bool
+    let installedLabel: String
+    let installTitle: String
+    let install: () -> Void
+    var remove: (() -> Void)? = nil
+
+    var body: some View {
+        if let installStatus {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    if installStatus.fraction == nil {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(installStatus.message).font(.callout).lineLimit(2)
+                    Spacer(minLength: 0)
+                    if let fraction = installStatus.fraction {
+                        Text("\(Int(fraction * 100))%")
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let fraction = installStatus.fraction {
+                    ProgressView(value: fraction)
+                }
+            }
+        } else if isInstalled {
+            HStack {
+                Label(installedLabel, systemImage: "checkmark.circle")
+                    .foregroundStyle(.green)
+                if let remove {
+                    Spacer()
+                    Button("Remove", action: remove)
+                        .buttonStyle(.link)
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                Button(installTitle, action: install)
+                if let installError {
+                    // Selectable: the useful failures name a command to run
+                    // (installing uv) or a path to look at.
+                    Label {
+                        Text(installError).textSelection(.enabled)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 }

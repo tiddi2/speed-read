@@ -26,9 +26,12 @@ for res in "$BIN_DIR"/*.bundle; do
   cp -R "$res" "$BUNDLE_DIR/Contents/Resources/"
 done
 
-# Kokoro daemon script — installed into App Support by the in-app installer.
+# Local TTS daemon — installed into App Support by the in-app installer.
 cp daemon/sr_tts_server.py "$BUNDLE_DIR/Contents/Resources/"
 cp daemon/requirements.lock "$BUNDLE_DIR/Contents/Resources/kokoro-requirements.lock"
+# Norwegian model fetcher — run straight from the bundle during that install,
+# so unlike the daemon there is nothing to copy out or keep in sync.
+cp daemon/sr_f5_fetch.py "$BUNDLE_DIR/Contents/Resources/"
 
 # App icon (Dock, Finder, ⌘-Tab, About). Regenerate with scripts/make-icon.py.
 cp resources/sr.icns "$BUNDLE_DIR/Contents/Resources/sr.icns"
@@ -49,6 +52,8 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<'PLIST'
     <key>CFBundleVersion</key>           <string>1</string>
     <key>LSMinimumSystemVersion</key>    <string>14.0</string>
     <key>LSUIElement</key>               <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>sr records a few seconds of you reading, so the offline Norwegian voice can read back in your voice. The recording stays on this Mac.</string>
     <key>NSHumanReadableCopyright</key>  <string>© 2026 Patrick Ellis. MIT License.</string>
 </dict>
 </plist>

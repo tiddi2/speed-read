@@ -1,5 +1,5 @@
 .PHONY: build test app run install update setup-signing reset-permissions \
-        signing-status quit-sr clean
+        signing-status quit-sr clean pin-f5-model
 
 build:
 	swift build
@@ -32,7 +32,9 @@ run: app
 # replaces /Applications/sr.app outright. The Accessibility grant follows the
 # signing identity (bundle id + sr-dev cert), not the path, so it survives this.
 # For routine updates prefer `make update`.
-install: setup-signing app
+install: app
+	@$(MAKE) --no-print-directory setup-signing || \
+	  printf 'note: continuing with ad-hoc signing — see the message above.\n' >&2
 	@$(MAKE) --no-print-directory quit-sr
 	rm -rf /Applications/sr.app
 	cp -R dist/sr.app /Applications/sr.app
@@ -49,11 +51,13 @@ install: setup-signing app
 #
 # Neither command can reset your preferences: voices, models, hotkeys, speed,
 # budget and backend mode live in UserDefaults (com.patrickellis.sr), the API
-# key lives in the login Keychain, and the audio cache and local voice live in
-# ~/Library/Application Support/sr. None of those are inside sr.app.
+# key lives in the login Keychain, and the audio cache, the offline models and
+# your Norwegian reference recordings live in ~/Library/Application Support/sr.
+# None of those are inside sr.app.
 update:
 	git pull --ff-only
-	@$(MAKE) --no-print-directory setup-signing
+	@$(MAKE) --no-print-directory setup-signing || \
+	  printf 'note: continuing with ad-hoc signing — see the message above.\n' >&2
 	@$(MAKE) --no-print-directory app
 	@$(MAKE) --no-print-directory quit-sr
 	@prev="$$(codesign -d -r- /Applications/sr.app 2>/dev/null | sed -n 's/^designated => //p')"; \
@@ -68,8 +72,20 @@ update:
 # Creates the local "sr-dev" code-signing identity the first time, then does
 # nothing on later runs. This is what keeps macOS from treating each rebuild as
 # a new app — see README > Development. `make app` runs it too.
+#
+# `install` and `update` call it but do not stop when it fails. The script
+# already says a failure means "builds stay ad-hoc signed", and the only cost
+# of that is re-approving Accessibility after each update — aborting the whole
+# update over it contradicts the message and leaves no way to build at all.
+# Run this target on its own to see a failure as an error.
 setup-signing:
 	@bash scripts/setup-signing.sh
+
+# Print the Swift pins for the Norwegian model you have installed, so a
+# community fine-tune with no stable revision can be frozen to one commit.
+# See scripts/pin-f5-model.sh.
+pin-f5-model:
+	@bash scripts/pin-f5-model.sh
 
 # Prove the identity works, and say where its key lives.
 signing-status:

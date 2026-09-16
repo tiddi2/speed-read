@@ -5,6 +5,22 @@ import Foundation
 import SRCore
 import SwiftUI
 
+/// What an offline-voice install is doing right now.
+///
+/// `fraction` is the download's real progress when it is knowable and nil when
+/// it is not — a venv build has no meaningful percentage, and neither does
+/// Kokoro's snapshot download, which reports no bytes. Declared outside
+/// AppState so the Settings row can hold one without inheriting its isolation.
+struct InstallStatus: Equatable {
+    var message: String
+    var fraction: Double?
+
+    init(_ message: String, fraction: Double? = nil) {
+        self.message = message
+        self.fraction = fraction
+    }
+}
+
 /// Central controller: hotkeys → routing → capture → normalize → chunk →
 /// synthesize (cache-first, budgeted) → play. Owns all mutable app state.
 @MainActor
@@ -28,15 +44,49 @@ final class AppState: ObservableObject {
     @Published var availableVoices: [Voice] = ElevenLabsProvider.presetVoices
     private var voicesFetchedAt: Date?
     @Published var historyStatus: String = ""
-    @Published var kokoroInstallStatus: String?
+    @Published var kokoroInstallStatus: InstallStatus?
     @Published var kokoroInstalled = KokoroRuntime.shared.isInstalled
     @Published var kokoroNeedsUpdate = KokoroRuntime.shared.installer.needsUpdate
+    /// Why the last install attempt failed, kept until the next attempt.
+    ///
+    /// `lastError` flashes and clears, which is the right behavior for a read
+    /// that went wrong mid-sentence and the wrong one for a multi-minute
+    /// install: the message was on screen for a moment and the button came
+    /// back looking untouched, with no way to find out what happened.
+    @Published var kokoroInstallError: String?
+    // The Norwegian offline voice is a separate download with a separate
+    // model, so it gets its own install state rather than sharing Kokoro's.
+    @Published var f5InstallStatus: InstallStatus?
+    @Published var f5InstallError: String?
+    @Published var f5Installed = F5Runtime.shared.isInstalled
+    @Published var f5NeedsUpdate = F5Runtime.shared.installer.needsUpdate
+    /// Reference recordings the Norwegian voice can read with. Mirrored here
+    /// so SwiftUI re-renders when one is added or removed; the store on disk
+    /// is the durable copy.
+    @Published var f5Voices: [F5Voice] = F5Runtime.shared.voices.voices()
     @Published private(set) var accessibilityGranted = AXIsProcessTrusted()
 
     @Published var playbackRate: Double {
         didSet {
             settings.playbackRate = playbackRate
             playback.rate = playbackRate
+        }
+    }
+
+    /// Which F5 architecture the Norwegian checkpoint is loaded with.
+    ///
+    /// The two F5-TTS architectures share every tensor shape, so a checkpoint
+    /// cannot be inspected to find out which it is and the wrong choice
+    /// produces babble rather than an error. Changing it restarts the daemon
+    /// (the model is rebuilt) and, through the route's cache variant, stops
+    /// audio generated the other way from being replayed.
+    @Published var f5Variant: F5Installer.Variant {
+        didSet {
+            guard f5Variant != oldValue else { return }
+            settings.f5Variant = f5Variant
+            preview.stop()
+            Task { await KokoroRuntime.shared.supervisor.stop() }
+            flashStatus("Norwegian voice will reload as \(f5Variant.displayName)")
         }
     }
     // Voice/model are per language (SpeechLanguage): a read is always started
@@ -71,7 +121,7 @@ final class AppState: ObservableObject {
     func setLocalVoiceID(_ voiceID: String, for language: SpeechLanguage) {
         // Never let a voice from another language become this language's local
         // voice — that is exactly the substitution language profiles prevent.
-        guard language.ownsLocalVoice(voiceID) else { return }
+        guard LocalVoices.owns(voiceID: voiceID, language: language) else { return }
         localVoiceIDByLanguage[language] = voiceID
         settings.setLocalVoiceID(voiceID, for: language)
     }
@@ -304,6 +354,7 @@ final class AppState: ObservableObject {
 
     private var statusClearTask: Task<Void, Never>?
     private var installTask: Task<Void, Never>?
+    private var f5InstallTask: Task<Void, Never>?
     private var preparationTask: Task<Void, Never>?
     private var cancellables: Set<AnyCancellable> = []
     /// Serializes selection captures: two concurrent ⌘C fallbacks snapshot/
@@ -321,13 +372,15 @@ final class AppState: ObservableObject {
         playback = PlaybackEngine(rate: store.playbackRate,
                                   sentencePauseMS: store.sentencePauseMS)
         playbackRate = store.playbackRate
+        f5Variant = F5Runtime.shared.variant(settings: store)
         var voices: [SpeechLanguage: String] = [:]
         var models: [SpeechLanguage: String] = [:]
         var localVoices: [SpeechLanguage: String] = [:]
         for language in SpeechLanguage.allCases {
             voices[language] = store.voiceID(for: language)
             models[language] = store.modelID(for: language)
-            // Absent for a language the local model cannot speak (Norwegian).
+            // Absent until that language's offline model is installed (and,
+            // for Norwegian, until a reference recording has been added).
             if let local = store.localVoiceID(for: language) {
                 localVoices[language] = local
             }
@@ -394,14 +447,15 @@ final class AppState: ObservableObject {
 
         // Keep the installed daemon script current with the bundled one —
         // daemon fixes in app updates would otherwise never reach installs.
-        if KokoroRuntime.shared.isInstalled, let source = daemonScriptSource() {
-            KokoroRuntime.shared.installer.syncDaemonScript(from: source)
+        if let source = daemonScriptSource() {
+            LocalRuntimeInstaller().syncDaemonScript(from: source)
         }
 
         // Pre-warm the local daemon when it can be needed (Auto fallback or
         // Local mode), so cloud→local fallback is near-instant rather than
         // paying a cold model load. Idle unload still reclaims the memory.
-        if backendMode != .cloud && KokoroRuntime.shared.isInstalled {
+        if backendMode != .cloud
+            && (KokoroRuntime.shared.isInstalled || F5Runtime.shared.isInstalled) {
             Task.detached(priority: .utility) {
                 try? await KokoroRuntime.shared.supervisor.ensureRunning()
             }
@@ -415,6 +469,9 @@ final class AppState: ObservableObject {
         installTask?.cancel()
         await installTask?.value
         installTask = nil
+        f5InstallTask?.cancel()
+        await f5InstallTask?.value
+        f5InstallTask = nil
         // Persist not-yet-completed history deletions across quits (IDs are
         // opaque provider tokens — content-free). Re-enqueued at next launch.
         let ids = await janitor.pendingIDs
@@ -584,11 +641,12 @@ final class AppState: ObservableObject {
     /// Resolve primary/fallback providers from backend mode + routing (F-3, P-8)
     /// for one language.
     ///
-    /// A language the local model cannot speak (Norwegian) never gets a local
-    /// route, not even as an Auto-mode fallback: falling back would read the
-    /// text aloud in an English voice, which is the language substitution the
-    /// per-language hotkeys exist to rule out. Such a read is cloud-only, and
-    /// in Local-Only mode it is refused outright rather than mispronounced.
+    /// A language whose offline model is not installed never gets a local
+    /// route, not even as an Auto-mode fallback: each language has its own
+    /// model, and falling back to the other one's would read the text aloud in
+    /// the wrong language — the substitution the per-language hotkeys exist to
+    /// rule out. Such a read is cloud-only, and in Local-Only mode it is
+    /// refused outright rather than mispronounced.
     private func resolveRoutes(language: SpeechLanguage,
                                routingAction: RoutingPolicy.Action)
         -> (primary: SynthesisPipeline.Route, fallback: SynthesisPipeline.Route?, isLocal: Bool)? {
@@ -644,22 +702,26 @@ final class AppState: ObservableObject {
             variant: locator?.versionID ?? "")
     }
 
-    /// nil when the local model has no voice for `language`.
+    /// nil when this language has no usable offline voice: its model is not
+    /// installed, or — for Norwegian — no reference recording has been added.
     private func localRoute(for language: SpeechLanguage) -> SynthesisPipeline.Route? {
-        guard KokoroRuntime.shared.isInstalled,
+        guard LocalVoices.isInstalled(for: language),
               let localVoice = localVoiceID(for: language),
-              language.isSpeakableLocally else { return nil }
+              LocalVoices.owns(voiceID: localVoice, language: language) else { return nil }
         return SynthesisPipeline.Route(
-            provider: KokoroProvider(language: language),
+            provider: LocalVoices.provider(for: language),
             voiceID: localVoice,
-            modelID: KokoroProvider.cacheModelID,
-            languageCode: language.rawValue)
+            modelID: LocalVoices.cacheModelID(for: language),
+            languageCode: language.rawValue,
+            // F5 reads in the voice of a reference recording, so replacing
+            // that recording (or switching architecture) changes the audio
+            // for text the cache has already seen.
+            variant: LocalVoices.cacheVariant(for: language, voiceID: localVoice,
+                                              settings: settings))
     }
 
     private func localUnavailableMessage(for language: SpeechLanguage) -> String {
-        language.isSpeakableLocally
-            ? "Local voice not installed — install it in Settings → General."
-            : "The offline voice has no \(language.displayName) — switch to Cloud or Auto in Settings."
+        LocalVoices.unavailableMessage(for: language)
     }
 
     private func speak(_ raw: String,
@@ -877,17 +939,20 @@ final class AppState: ObservableObject {
                      route: cloudRoute(for: language, overridingVoice: voiceID))
     }
 
-    /// Audition an offline (Kokoro) voice. Free, and it works with no key.
+    /// Audition an offline voice. Free, and it works with no key.
     func previewLocalVoice(_ voiceID: String, language: SpeechLanguage) {
-        guard KokoroRuntime.shared.isInstalled, language.ownsLocalVoice(voiceID) else {
+        guard LocalVoices.isInstalled(for: language),
+              LocalVoices.owns(voiceID: voiceID, language: language) else {
             flashStatus(localUnavailableMessage(for: language))
             return
         }
         let route = SynthesisPipeline.Route(
-            provider: KokoroProvider(language: language),
+            provider: LocalVoices.provider(for: language),
             voiceID: voiceID,
-            modelID: KokoroProvider.cacheModelID,
-            languageCode: language.rawValue)
+            modelID: LocalVoices.cacheModelID(for: language),
+            languageCode: language.rawValue,
+            variant: LocalVoices.cacheVariant(for: language, voiceID: voiceID,
+                                              settings: settings))
         startPreview(token: PreviewToken.localVoice(voiceID, language),
                      text: VoiceSample.text(for: language),
                      route: route)
@@ -1034,11 +1099,12 @@ final class AppState: ObservableObject {
         guard kokoroInstallStatus == nil else { return }
         guard let source = daemonScriptSource(),
               let requirementsLock = requirementsLockSource() else {
-            lastError = "Local voice installer resources are missing from the app bundle."
-            flashStatus(lastError!)
+            kokoroInstallError = "Installer resources are missing from the app bundle."
+            flashStatus(kokoroInstallError!)
             return
         }
-        kokoroInstallStatus = "Starting…"
+        kokoroInstallError = nil
+        kokoroInstallStatus = InstallStatus("Starting…")
         // Strong capture: install must outlive any UI churn, and AppState
         // lives for the app's lifetime.
         installTask = Task { [self] in
@@ -1047,10 +1113,14 @@ final class AppState: ObservableObject {
                 daemonSourceURL: source,
                 requirementsLockURL: requirementsLock) {
                 switch progress {
-                case .creatingVenv: kokoroInstallStatus = "Creating Python environment…"
-                case .installingPackages: kokoroInstallStatus = "Installing mlx-audio…"
-                case .downloadingModel: kokoroInstallStatus = "Downloading Kokoro model (~330 MB)…"
-                case .verifying: kokoroInstallStatus = "Verifying checksums…"
+                case .creatingVenv:
+                    kokoroInstallStatus = InstallStatus("Creating Python environment…")
+                case .installingPackages:
+                    kokoroInstallStatus = InstallStatus("Installing mlx-audio…")
+                case .downloadingModel:
+                    kokoroInstallStatus = InstallStatus("Downloading Kokoro model (~330 MB)…")
+                case .verifying:
+                    kokoroInstallStatus = InstallStatus("Verifying checksums…")
                 case .done:
                     kokoroInstallStatus = nil
                     kokoroInstalled = true
@@ -1058,8 +1128,8 @@ final class AppState: ObservableObject {
                     flashStatus("Local voice installed")
                 case .failed(let message):
                     kokoroInstallStatus = nil
-                    lastError = "Local install failed: \(message)"
-                    flashStatus(lastError ?? "Install failed")
+                    kokoroInstallError = message
+                    flashStatus("Install failed")
                 }
             }
         }
@@ -1085,6 +1155,140 @@ final class AppState: ObservableObject {
         return FileManager.default.fileExists(atPath: dev.path) ? dev : nil
     }
 
+    private func f5FetchScriptSource() -> URL? {
+        if let bundled = Bundle.main.url(forResource: "sr_f5_fetch", withExtension: "py") {
+            return bundled
+        }
+        let dev = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("daemon/sr_f5_fetch.py")
+        return FileManager.default.fileExists(atPath: dev.path) ? dev : nil
+    }
+
+    // MARK: - Norwegian offline voice (F5-TTS)
+
+    func installF5Norwegian() {
+        guard f5InstallStatus == nil else { return }
+        guard let daemon = daemonScriptSource(),
+              let requirementsLock = requirementsLockSource(),
+              let fetcher = f5FetchScriptSource() else {
+            f5InstallError = "Installer resources are missing from the app bundle."
+            flashStatus(f5InstallError!)
+            return
+        }
+        f5InstallError = nil
+        f5InstallStatus = InstallStatus("Starting…")
+        // Strong capture, like the Kokoro install: this runs for minutes and
+        // must outlive any UI churn.
+        f5InstallTask = Task { [self] in
+            defer { f5InstallTask = nil }
+            for await progress in F5Runtime.shared.installer.install(
+                daemonSourceURL: daemon,
+                requirementsLockURL: requirementsLock,
+                fetchSourceURL: fetcher) {
+                switch progress {
+                case .creatingVenv:
+                    f5InstallStatus = InstallStatus("Creating Python environment…")
+                case .installingPackages:
+                    f5InstallStatus = InstallStatus("Installing f5-tts-mlx…")
+                case .downloading(let stage, let fraction):
+                    f5InstallStatus = InstallStatus(stage, fraction: fraction)
+                case .verifying:
+                    f5InstallStatus = InstallStatus("Verifying checksums…")
+                case .done:
+                    f5InstallStatus = nil
+                    await finishF5InstallChange()
+                    flashStatus(f5Voices.isEmpty
+                        ? "Norwegian voice installed — add a reference recording in Voices"
+                        : "Norwegian offline voice installed")
+                case .failed(let message):
+                    f5InstallStatus = nil
+                    f5InstallError = message
+                    flashStatus("Install failed")
+                }
+            }
+        }
+    }
+
+    func uninstallF5Norwegian() {
+        guard f5InstallStatus == nil else { return }
+        F5Runtime.shared.installer.uninstall()
+        Task { @MainActor in
+            await finishF5InstallChange()
+            flashStatus("Norwegian offline voice removed")
+        }
+    }
+
+    enum AddVoiceOutcome {
+        case success(F5Voice)
+        case failure(String)
+    }
+
+    /// Add a reference recording the Norwegian voice can read with.
+    ///
+    /// `replacing` reuses an existing voice's slot rather than making a second
+    /// one, which is what a re-record in the setup wizard means — otherwise a
+    /// reader who needed three takes ends up with three voices.
+    /// `makeDefault` is for the same flow: someone who just recorded a voice
+    /// meant to start using it, where a voice added from a file might be one
+    /// of several.
+    @discardableResult
+    func addF5Voice(name: String, audio: URL, transcript: String,
+                    replacing existingID: String? = nil,
+                    makeDefault: Bool = false) -> AddVoiceOutcome {
+        do {
+            let voice = try F5Runtime.shared.voices.importVoice(
+                name: name, audio: audio, transcript: transcript,
+                id: existingID)
+            refreshF5Voices()
+            // Keep the selection on a voice that exists — so the first
+            // recording added is all it takes to start reading offline.
+            let selectionIsUsable = localVoiceID(for: .norwegian)
+                .map { LocalVoices.owns(voiceID: $0, language: .norwegian) } ?? false
+            if makeDefault || !selectionIsUsable {
+                setLocalVoiceID(voice.id, for: .norwegian)
+            }
+            flashStatus("Added “\(voice.name)”")
+            return .success(voice)
+        } catch let error as InstallError {
+            return .failure(error.message)
+        } catch {
+            return .failure("That recording could not be imported.")
+        }
+    }
+
+    func removeF5Voice(id: String) {
+        try? F5Runtime.shared.voices.remove(id: id)
+        preview.stop()
+        refreshF5Voices()
+        // The selection may have just been deleted; fall back to whatever is
+        // left rather than leaving a dangling voice id behind.
+        if let replacement = LocalVoices.defaultVoiceID(for: .norwegian) {
+            setLocalVoiceID(replacement, for: .norwegian)
+        } else {
+            localVoiceIDByLanguage[.norwegian] = nil
+        }
+    }
+
+    func refreshF5Voices() {
+        f5Voices = F5Runtime.shared.voices.voices()
+    }
+
+    /// Re-read install state and restart the daemon so a running one picks up
+    /// the change: the engines it can serve are fixed at spawn time.
+    private func finishF5InstallChange() async {
+        f5Installed = F5Runtime.shared.isInstalled
+        f5NeedsUpdate = F5Runtime.shared.installer.needsUpdate
+        kokoroInstalled = KokoroRuntime.shared.isInstalled
+        kokoroNeedsUpdate = KokoroRuntime.shared.installer.needsUpdate
+        refreshF5Voices()
+        f5Variant = F5Runtime.shared.variant(settings: settings)
+        if let voice = LocalVoices.defaultVoiceID(for: .norwegian),
+           localVoiceID(for: .norwegian) == nil {
+            setLocalVoiceID(voice, for: .norwegian)
+        }
+        await KokoroRuntime.shared.supervisor.stop()
+    }
+
     // MARK: - Cache actions (P-10)
 
     func purgeCache() {
@@ -1097,6 +1301,15 @@ final class AppState: ObservableObject {
     private func handleSynthesisError(_ error: TTSError) {
         stop()
         NSSound.beep()
+        // An offline read never touched the network, so it must not be
+        // described as a service or status code. Ask first; every other case
+        // below is genuinely ElevenLabs'.
+        // (.cancelled never matches — the mapper returns nil for it.)
+        if let local = LocalVoices.failureMessage(for: error) {
+            lastError = local
+            flashStatus(local)
+            return
+        }
         switch error {
         case .missingAPIKey:
             lastError = "No ElevenLabs API key — add one in Settings → Cost."
@@ -1110,12 +1323,6 @@ final class AppState: ObservableObject {
             lastError = "Synthesis error (HTTP \(status))."
         case .invalidAudio:
             lastError = "ElevenLabs returned invalid audio; the read was stopped."
-        case .network("kokoro: incompatible daemon"):
-            lastError = "Local voice needs a restart — quit all sr instances, then reopen sr."
-        case .network("kokoro: language not installed"):
-            lastError = "The offline voice cannot speak that language — switch to Cloud or Auto."
-        case .network(let detail) where detail.hasPrefix("kokoro"):
-            lastError = "Local voice unavailable."
         case .network:
             lastError = "Could not reach ElevenLabs."
         case .cancelled:
