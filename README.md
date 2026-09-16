@@ -57,7 +57,7 @@ Then, one-time setup:
 | Speak clipboard | Menu → Speak Clipboard → Norwegian / English |
 | Change hotkeys | Settings (⌘,) → Shortcuts |
 | Voice & model per language | Settings (⌘,) → Voices — ▶ on a row plays a sample |
-| Add a Norwegian offline voice | Settings → Voices → Norwegian → **Add Reference Voice…** |
+| Add a Norwegian offline voice | Settings → Voices → Norwegian → **Record a Voice…** |
 | Custom pronunciations | Settings → Pronunciation (per language, with before/after playback) |
 | Backend | Settings → General: **Auto** (cloud, falls back to local), **Cloud**, **Local 🔒** |
 
@@ -122,17 +122,29 @@ and the Norwegian model is loaded only when a Norwegian read arrives.
 
 **A voice is a recording.** F5-TTS is a zero-shot cloner: it has no baked-in
 speakers, and reads new text in the voice of a short reference clip it is
-conditioned on. So Settings → Voices → Norwegian lists reference recordings
-rather than names, and **Add Reference Voice…** takes any audio file plus a
-transcript of exactly what is said in it. sr converts the file to the 24 kHz
-mono the model conditions on, trims it to about 12 seconds, and keeps only
-that copy under `~/Library/Application Support/sr/f5/voices/`. Nothing about
-it is uploaded, and removing the model leaves your recordings alone.
+conditioned on. So Settings → Voices → Norwegian lists recordings rather than
+names.
 
-Three to ten seconds of clear speech with no background noise works best, and
-the transcript has to match the recording word for word — that pairing is how
-F5 lines a voice up with text. If the model repo ships a sample clip, the
-install imports it as a starting voice, so there may be nothing to add.
+**Record a Voice…** walks you through making one, and takes about a minute. It
+gives you a Norwegian sentence to read, shows a level meter while you read it,
+plays the take back so you can redo it, and then has the model read a
+*different* sentence in your new voice — which is the only thing that really
+answers whether the voice is any good. The sentence it gives you is also saved
+as the transcript, so the recording and its text agree exactly: that pairing is
+how F5 lines a voice up with text, and getting it slightly wrong is the usual
+way a reference clip goes quietly bad. Recording asks for microphone permission
+once, and nothing leaves the Mac.
+
+**Add from a File…** is there for a clip you already have — your own recording,
+or an openly licensed one such as [`NbAiLab/nb-librivox`](https://huggingface.co/datasets/NbAiLab/nb-librivox)
+(CC0, Norwegian, built for TTS). Then you supply the transcript yourself, word
+for word.
+
+Either way sr converts the audio to the 24 kHz mono the model conditions on,
+trims it to about 12 seconds, and keeps only that copy under
+`~/Library/Application Support/sr/f5/voices/`. Three to ten seconds of clear
+speech with no background noise works best. If the model repo ships a sample
+clip, the install imports that as a starting voice too.
 
 **Pinning.** Kokoro's revision and file hashes are compiled into sr, because
 they could be resolved when the code was written. The Norwegian model is a

@@ -38,6 +38,29 @@
   Hugging Face cache, so it rebuilds the environment rather than
   re-downloading anything. Until then, English reads fall back to the cloud.
 
+- Setting up a Norwegian voice is now a guided recording rather than a file
+  picker. **Settings → Voices → Record a Voice…** gives you a Norwegian
+  sentence to read, meters the input while you read it, plays the take back,
+  and then has the model read a *different* sentence in the new voice — the
+  only step that actually answers whether the voice is any good. Re-recording
+  replaces the voice rather than stacking up beside it.
+
+  The reason for a wizard rather than two text fields: F5 conditions on a
+  recording *and* its transcript, and the two have to agree word for word.
+  Asking someone to type out what they just said is both work and the likeliest
+  way to end up with a pairing that is subtly wrong — which does not fail, it
+  quietly degrades every read afterwards. Supplying the script inverts that, so
+  the transcript is exact by construction.
+
+  The three scripts are chosen to put the awkward sounds in the reader's mouth
+  (æ, ø, å, the *kj* and *skj* clusters) and to run six to ten seconds at an
+  unhurried pace. Recording captures straight to the 24 kHz mono the model
+  conditions on, so what you hear back is what the model hears. A take that is
+  too short, too quiet or clipped is called out before you keep it, since that
+  is the last moment anyone can do anything about it. Microphone permission is
+  asked for once; the clip stays on the Mac. Adding a voice from a file is
+  still there for a clip you already have.
+
 - A model repo that ships no `vocab.txt` no longer stops the install.
   akhbar/F5_Norwegian does not ship one, and the installer treated that as
   fatal — but most F5 trainings use the stock character vocabulary unchanged,

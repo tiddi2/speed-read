@@ -52,6 +52,8 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<'PLIST'
     <key>CFBundleVersion</key>           <string>1</string>
     <key>LSMinimumSystemVersion</key>    <string>14.0</string>
     <key>LSUIElement</key>               <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>sr records a few seconds of you reading, so the offline Norwegian voice can read back in your voice. The recording stays on this Mac.</string>
     <key>NSHumanReadableCopyright</key>  <string>© 2026 Patrick Ellis. MIT License.</string>
 </dict>
 </plist>

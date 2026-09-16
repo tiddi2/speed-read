@@ -1218,27 +1218,41 @@ final class AppState: ObservableObject {
         }
     }
 
+    enum AddVoiceOutcome {
+        case success(F5Voice)
+        case failure(String)
+    }
+
     /// Add a reference recording the Norwegian voice can read with.
-    /// Returns an error message to show, or nil on success.
+    ///
+    /// `replacing` reuses an existing voice's slot rather than making a second
+    /// one, which is what a re-record in the setup wizard means — otherwise a
+    /// reader who needed three takes ends up with three voices.
+    /// `makeDefault` is for the same flow: someone who just recorded a voice
+    /// meant to start using it, where a voice added from a file might be one
+    /// of several.
     @discardableResult
-    func addF5Voice(name: String, audio: URL, transcript: String) -> String? {
+    func addF5Voice(name: String, audio: URL, transcript: String,
+                    replacing existingID: String? = nil,
+                    makeDefault: Bool = false) -> AddVoiceOutcome {
         do {
             let voice = try F5Runtime.shared.voices.importVoice(
-                name: name, audio: audio, transcript: transcript)
+                name: name, audio: audio, transcript: transcript,
+                id: existingID)
             refreshF5Voices()
             // Keep the selection on a voice that exists — so the first
             // recording added is all it takes to start reading offline.
             let selectionIsUsable = localVoiceID(for: .norwegian)
                 .map { LocalVoices.owns(voiceID: $0, language: .norwegian) } ?? false
-            if !selectionIsUsable {
+            if makeDefault || !selectionIsUsable {
                 setLocalVoiceID(voice.id, for: .norwegian)
             }
             flashStatus("Added “\(voice.name)”")
-            return nil
+            return .success(voice)
         } catch let error as InstallError {
-            return error.message
+            return .failure(error.message)
         } catch {
-            return "That recording could not be imported."
+            return .failure("That recording could not be imported.")
         }
     }
 

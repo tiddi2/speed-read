@@ -21,6 +21,7 @@ struct VoiceSettingsTab: View {
     @State private var newVoiceTranscript = ""
     @State private var newVoiceURL: URL?
     @State private var addVoiceError: String?
+    @State private var isRecordingVoice = false
 
     var body: some View {
         Form {
@@ -65,6 +66,9 @@ struct VoiceSettingsTab: View {
             search = ""
             state.preview.stop()
             resetVoiceDraft()
+        }
+        .sheet(isPresented: $isRecordingVoice) {
+            RecordVoiceSheet().environmentObject(state)
         }
     }
 
@@ -161,7 +165,7 @@ struct VoiceSettingsTab: View {
                 ? state.f5Voices.map(\.asVoice)
                 : LocalVoices.available(for: language)
             if localVoices.isEmpty {
-                Text("No reference recording yet. Add 3–10 seconds of clear Norwegian speech and sr will read in that voice — entirely on this Mac.")
+                Text("No voice yet. Record one — sr gives you a sentence to read, then reads back in your voice. It takes about a minute and never leaves this Mac.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 ScrollView {
@@ -195,6 +199,20 @@ struct VoiceSettingsTab: View {
 
     @ViewBuilder
     private var referenceVoiceEditor: some View {
+        if !isAddingVoice {
+            HStack(spacing: 10) {
+                Button {
+                    state.preview.stop()
+                    isRecordingVoice = true
+                } label: {
+                    Label("Record a Voice…", systemImage: "mic")
+                }
+                Button("Add from a File…") {
+                    resetVoiceDraft()
+                    isAddingVoice = true
+                }
+            }
+        }
         if isAddingVoice {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
@@ -220,11 +238,6 @@ struct VoiceSettingsTab: View {
                         .disabled(newVoiceURL == nil)
                     Button("Cancel") { resetVoiceDraft() }
                 }
-            }
-        } else {
-            Button("Add Reference Voice…") {
-                resetVoiceDraft()
-                isAddingVoice = true
             }
         }
     }
@@ -258,12 +271,13 @@ struct VoiceSettingsTab: View {
 
     private func addVoice() {
         guard let url = newVoiceURL else { return }
-        if let failure = state.addF5Voice(name: newVoiceName, audio: url,
-                                          transcript: newVoiceTranscript) {
-            addVoiceError = failure
-            return
+        switch state.addF5Voice(name: newVoiceName, audio: url,
+                                transcript: newVoiceTranscript) {
+        case .success:
+            resetVoiceDraft()
+        case .failure(let message):
+            addVoiceError = message
         }
-        resetVoiceDraft()
     }
 
     private func resetVoiceDraft() {
