@@ -34,6 +34,8 @@ struct SettingsView: View {
                 .tabItem { Label("Privacy", systemImage: "hand.raised") }
             tab(CostSettings())
                 .tabItem { Label("Cost", systemImage: "creditcard") }
+            tab(DiagnosticsSettingsTab())
+                .tabItem { Label("Logs", systemImage: "doc.text.magnifyingglass") }
         }
         .onAppear {
             state.settingsWindowDidOpen()

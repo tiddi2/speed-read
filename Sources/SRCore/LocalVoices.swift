@@ -134,9 +134,11 @@ public enum LocalVoices {
         }
     }
 
-    /// Where the daemon writes what went wrong. Named in the messages above
-    /// because for a local engine it is the only other record there is.
-    public static let logHint = "~/Library/Logs/sr/kokoro.log"
+    /// Where the rest of the story is. Named in the messages above because
+    /// for a local engine it is the only other record there is — and named as
+    /// a place in the app rather than a path, because a file path in a menu
+    /// row is an instruction to open a terminal. The tab shows the path.
+    public static let logHint = "Settings → Logs"
 
     /// The engine-tagged tail of a local error, or nil if not one of ours.
     private static func localReason(_ detail: String) -> String? {

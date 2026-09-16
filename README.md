@@ -173,15 +173,24 @@ Settings → Voices has an **Architecture** switch — flip it, and the next rea
 reloads the model the other way. Cached Norwegian audio is keyed on the choice,
 so nothing generated the wrong way is ever replayed.
 
-**If a read fails outright.** Run `make check-offline` from a checkout. The
-daemon never relays an exception's message — it could quote the text being
-read — so a failure reaches the menu bar as its phase and, where every way of
-failing has one fix, that condition: model files damaged, checkpoint against
-the wrong architecture, recording unreadable, out of memory. `check-offline`
-loads the model and reads a sentence of its own in the foreground, where there
-is nothing to protect, and prints the exception, its traceback, and the size of
-every file it used. It runs against the installed environment, so it needs no
-rebuild, and takes a voice id to test one in particular:
+**If a read fails outright.** Open **Settings → Logs**. It shows both of sr's
+logs — the app's and the offline daemon's — follows them as they are written,
+and has one button, **Test the offline voice**, that loads the model and reads
+a sentence in the foreground.
+
+That button is the one thing that can tell you what actually broke. The daemon
+never relays an exception's message, because the message could quote the text
+being read, so a failed read reaches the menu bar as the phase it failed in
+and — where every way of failing has one fix — that condition instead: model
+files damaged, checkpoint against the wrong architecture, recording
+unreadable, out of memory. The self-test reads a sentence of its own, where
+there is nothing to protect, and prints the exception, its traceback and the
+size of every file it used. **Copy for a bug report** puts that, the version,
+what is installed and both logs on the clipboard.
+
+sr's logs hold counts, timings and error types — never the text you read,
+never your API key — so they are safe to paste anywhere. The same check runs
+from a checkout as `make check-offline`, optionally against one voice:
 `make check-offline VOICE=min-stemme`.
 
 CLI (same binary):

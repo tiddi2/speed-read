@@ -135,6 +135,27 @@
   Settings override sr itself reads, against the installed environment rather
   than a rebuild.
 
+- **Settings → Logs.** sr keeps two logs — its own and the offline daemon's —
+  and until now reading either meant knowing they existed and opening a
+  terminal. The new tab shows both, follows them as they are written, tints
+  the error lines, and puts the version, what is installed, both logs and any
+  self-test output on the clipboard with one button. sr's logs are
+  content-free by construction: counts, timings, error types and the
+  file:line they came from, never the text you read and never your API key,
+  which is what makes them safe to send to someone.
+
+  It also has the button that answers the question the app cannot. **Test the
+  offline voice** runs the same self-test as `make check-offline`, streaming
+  its output into the tab: it loads the model and reads a sentence of its own,
+  so there is nothing to protect and it can print the exception and its
+  traceback in full. It runs against the paths and architecture sr itself
+  would use, resolved from the install manifest and the Settings → Voices
+  override, so it tests the install that is failing rather than a fresh one.
+
+  Offline failure messages now point at this tab rather than at a file path.
+  A path in a menu row is an instruction to open a terminal; the tab shows the
+  path itself, next to the log it belongs to.
+
 - A failed signing-identity setup no longer aborts `make update`, and says what
   went wrong when it does fail. `setup-signing.sh` judged its two certificate
   import routes by exit status, but a PKCS#12 that macOS accepts without

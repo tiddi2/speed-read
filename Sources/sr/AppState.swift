@@ -32,6 +32,9 @@ final class AppState: ObservableObject {
     /// Short auditions played from Settings. Separate from `playback` on
     /// purpose — hearing a voice must never disturb a read in progress.
     let preview = VoicePreviewer()
+    /// Settings → Logs. Owned here rather than by the tab so a self-test
+    /// survives switching tabs while it runs — it takes a minute or two.
+    let diagnostics = DiagnosticsModel()
     private let pipeline = SynthesisPipeline()
     private let janitor = HistoryJanitor()
     private var routing = RoutingPolicy.load()
