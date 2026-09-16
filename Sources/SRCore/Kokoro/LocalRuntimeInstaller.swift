@@ -56,7 +56,8 @@ public struct LocalRuntimeInstaller: Sendable {
         // 1. venv (pinned interpreter; uv fetches a standalone build if needed)
         progress(.creatingVenv)
         try await run(uv, [
-            "venv", "--clear", "--python", Self.pythonVersion, paths.venvDir.path,
+            "venv", "--no-config", "--clear",
+            "--python", Self.pythonVersion, paths.venvDir.path,
         ])
         try Task.checkCancellation()
 
@@ -68,7 +69,7 @@ public struct LocalRuntimeInstaller: Sendable {
             throw InstallError(message: "requirements lock checksum mismatch")
         }
         try await run(uv, [
-            "pip", "install",
+            "pip", "install", "--no-config",
             "--python", paths.venvPython.path,
             "--require-hashes",
             "--requirements", requirementsLockURL.path,
@@ -98,6 +99,25 @@ public struct LocalRuntimeInstaller: Sendable {
         } catch {
             SRLog.error("kokoro.daemon_script_sync", ["error": String(describing: error)])
         }
+    }
+
+    /// The environment a child process gets: the caller's additions, minus
+    /// anything that would let ambient configuration change what is installed.
+    ///
+    /// uv reads `UV_*` from the environment as well as from `uv.toml`, and
+    /// `--no-config` only covers the files. That split is not academic: a
+    /// stray `UV_EXCLUDE_NEWER` in a login shell makes `uv venv` refuse to
+    /// start at all, which is how this was found. A stray `UV_INDEX_URL`
+    /// would be quieter and worse, resolving the pinned closure from
+    /// somewhere else — `--require-hashes` would still catch the bytes, but
+    /// sr's local stack is meant to build the same way on every machine, so
+    /// ambient uv settings get no say. Nothing else here reads `UV_*`, so
+    /// stripping it for every child costs nothing.
+    static func scrubbed(_ environment: [String: String],
+                         adding extras: [String: String]) -> [String: String] {
+        var scrubbed = environment.filter { !$0.key.hasPrefix("UV_") }
+        scrubbed.merge(extras) { _, new in new }
+        return scrubbed
     }
 
     /// Locate the uv binary (PATH, then the usual install locations).
@@ -139,10 +159,8 @@ public struct LocalRuntimeInstaller: Sendable {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
-        if !environment.isEmpty {
-            process.environment = ProcessInfo.processInfo.environment
-                .merging(environment) { _, new in new }
-        }
+        process.environment = Self.scrubbed(
+            ProcessInfo.processInfo.environment, adding: environment)
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
         process.standardError = err

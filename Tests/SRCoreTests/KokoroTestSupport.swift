@@ -73,6 +73,31 @@ enum KokoroTestSupport {
             .requirementsLockSHA256 == nil
     }
 
+    /// (keptKeys, uvKeysRemaining, pathValue, extraValue) after scrubbing.
+    static func scrubbedEnvironment() -> (Int, Int, String?, String?) {
+        let ambient = [
+            "PATH": "/usr/bin",
+            "HOME": "/Users/someone",
+            "HTTPS_PROXY": "http://proxy:3128",
+            "UV_EXCLUDE_NEWER": "3 days",
+            "UV_INDEX_URL": "https://somewhere.else/simple",
+            "UV_PYTHON": "3.9",
+        ]
+        let result = LocalRuntimeInstaller.scrubbed(
+            ambient, adding: ["HF_HUB_DISABLE_TELEMETRY": "1"])
+        return (result.count,
+                result.keys.filter { $0.hasPrefix("UV_") }.count,
+                result["PATH"],
+                result["HF_HUB_DISABLE_TELEMETRY"])
+    }
+
+    /// An explicit extra must win over an ambient value of the same name.
+    static func scrubbedEnvironmentPrefersExplicitValues() -> String? {
+        LocalRuntimeInstaller.scrubbed(
+            ["HF_HUB_DISABLE_TELEMETRY": "0"],
+            adding: ["HF_HUB_DISABLE_TELEMETRY": "1"])["HF_HUB_DISABLE_TELEMETRY"]
+    }
+
     /// SHA-256 of a temp file containing `content`, via the streaming hasher.
     static func sha256OfContent(_ content: String) throws -> String {
         let temp = FileManager.default.temporaryDirectory

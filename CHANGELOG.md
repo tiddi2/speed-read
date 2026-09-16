@@ -38,6 +38,15 @@
   Hugging Face cache, so it rebuilds the environment rather than
   re-downloading anything. Until then, English reads fall back to the cloud.
 
+- An offline-voice install no longer inherits the user's uv settings. uv reads
+  `UV_*` from the environment as well as from `uv.toml`, and sr passed its
+  whole environment through — so a `UV_EXCLUDE_NEWER` left in a login shell
+  made `uv venv` refuse to start, and the install died before creating
+  anything. `--no-config` covers the files but not the variables, so the
+  installer now strips `UV_*` from every child process as well. The quieter
+  case matters more than the noisy one: a stray `UV_INDEX_URL` would have
+  resolved the pinned closure from somewhere else instead of failing outright.
+
 - Installing an offline voice now shows what it is doing, and says so when it
   fails. The Norwegian model is a 1.4 GB download and the only feedback was a
   spinner with a fixed caption, which looks the same at 2% as at 98% as at

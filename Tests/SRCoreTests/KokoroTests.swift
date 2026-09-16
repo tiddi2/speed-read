@@ -80,6 +80,25 @@ import Testing
         #expect(response == .error(message: "unknown daemon error"))
     }
 
+    // MARK: - Child environment
+
+    /// uv reads UV_* from the environment as well as from uv.toml, and
+    /// `--no-config` only covers the files. A `UV_EXCLUDE_NEWER` left in a
+    /// login shell is enough to stop `uv venv` from starting at all.
+    @Test func uvSettingsFromTheUsersShellDoNotReachTheInstaller() {
+        let (kept, uvRemaining, path, extra) = KokoroTestSupport.scrubbedEnvironment()
+        #expect(uvRemaining == 0)
+        // PATH, HOME, HTTPS_PROXY and the one added variable — the three UV_
+        // entries are gone and nothing else was collateral.
+        #expect(kept == 4)
+        #expect(path == "/usr/bin")
+        #expect(extra == "1")
+    }
+
+    @Test func anExplicitVariableOverridesTheAmbientOne() {
+        #expect(KokoroTestSupport.scrubbedEnvironmentPrefersExplicitValues() == "1")
+    }
+
     // MARK: - Paths
 
     @Test func pathDerivation() {
