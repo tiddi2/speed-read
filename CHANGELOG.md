@@ -38,6 +38,27 @@
   Hugging Face cache, so it rebuilds the environment rather than
   re-downloading anything. Until then, English reads fall back to the cloud.
 
+- Installing an offline voice now shows what it is doing, and says so when it
+  fails. The Norwegian model is a 1.4 GB download and the only feedback was a
+  spinner with a fixed caption, which looks the same at 2% as at 98% as at
+  hung. `sr_f5_fetch.py` now reports bytes as they land — huggingface_hub
+  offers no byte callback, so it watches the partial file in the hub cache,
+  which works whichever download backend is in play — and Settings draws a real
+  progress bar with a percentage.
+
+  More importantly, a failed install was invisible. The status label cleared,
+  the button came back looking untouched, and the reason went to the same
+  transient banner used for a read that went wrong mid-sentence — on screen for
+  a moment, gone before it could be read. The most likely failure by far is
+  having no `uv` installed, which fails in well under a second, so in practice
+  the install appeared to do nothing at all. The error now stays under the
+  button until the next attempt, and is selectable, because the useful ones
+  name a command to run.
+
+  Both progress and failures also appear in the menu bar panel, which is what
+  stays visible once the Settings window is closed — and a download this size
+  is exactly the thing you close the window and walk away from.
+
 - A failed signing-identity setup no longer aborts `make update`, and says what
   went wrong when it does fail. `setup-signing.sh` judged its two certificate
   import routes by exit status, but a PKCS#12 that macOS accepts without

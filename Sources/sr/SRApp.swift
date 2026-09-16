@@ -260,12 +260,42 @@ struct MenuView: View {
         if let message = state.statusMessage {
             Text(message).font(.caption).foregroundStyle(.orange)
         }
-        if let installStatus = state.kokoroInstallStatus {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text(installStatus).font(.caption).foregroundStyle(.secondary)
+        // Either offline voice, because the panel is what stays visible once
+        // the Settings window is closed — and a gigabyte-scale download is
+        // exactly the thing you close the window and walk away from.
+        ForEach(Array(installProgressRows.enumerated()), id: \.offset) { _, status in
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    if status.fraction == nil {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(status.message).font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    if let fraction = status.fraction {
+                        Text("\(Int(fraction * 100))%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let fraction = status.fraction {
+                    ProgressView(value: fraction)
+                }
             }
         }
+        ForEach(Array(installErrorRows.enumerated()), id: \.offset) { _, failure in
+            Label(failure, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var installProgressRows: [InstallStatus] {
+        [state.kokoroInstallStatus, state.f5InstallStatus].compactMap { $0 }
+    }
+
+    private var installErrorRows: [String] {
+        [state.kokoroInstallError, state.f5InstallError].compactMap { $0 }
     }
 
     private var bottomRow: some View {

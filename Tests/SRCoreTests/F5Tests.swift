@@ -67,6 +67,40 @@ import Testing
         #expect(try F5TestSupport.decodeV1FetchReportVariant() == .v1Base)
     }
 
+    // MARK: - Download progress
+
+    /// A gigabyte-scale download with no visible progress is
+    /// indistinguishable from a hang, so the byte fields the fetcher writes
+    /// have to survive the trip into a percentage.
+    @Test func downloadProgressBecomesAPercentage() throws {
+        let stage = try F5TestSupport.readProgress(
+            #"{"stage":"downloading","detail":"412 MB of 1.4 GB","bytes":412000000,"total":1400000000}"#)
+        #expect(stage.found)
+        #expect(stage.message == "Downloading Norwegian model — 412 MB of 1.4 GB")
+        #expect(stage.fraction != nil)
+        #expect(abs((stage.fraction ?? 0) - 0.294) < 0.01)
+    }
+
+    /// Steps that cannot report bytes must stay indeterminate rather than
+    /// claim 0% — a spinner is honest, a stuck bar at zero is not.
+    @Test(arguments: [
+        #"{"stage":"resolving","detail":""}"#,
+        #"{"stage":"normalizing","detail":""}"#,
+        #"{"stage":"downloading","detail":"","bytes":5,"total":0}"#,
+    ])
+    func stepsWithoutBytesReportNoFraction(_ json: String) throws {
+        let stage = try F5TestSupport.readProgress(json)
+        #expect(stage.found)
+        #expect(stage.fraction == nil)
+    }
+
+    @Test func anUnknownStageIsIgnoredRatherThanShown() throws {
+        let unknown = try F5TestSupport.readProgress(#"{"stage":"who-knows"}"#)
+        #expect(!unknown.found)
+        let garbage = try F5TestSupport.readProgress("not json at all")
+        #expect(!garbage.found)
+    }
+
     // MARK: - Reference voices
 
     @Test func importedVoiceIsResampledAndReadableBack() throws {

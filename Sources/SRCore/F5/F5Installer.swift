@@ -139,8 +139,9 @@ public struct F5Installer: Sendable {
     public enum InstallProgress: Sendable {
         case creatingVenv
         case installingPackages
-        /// Human-readable stage of the model fetch (it runs for minutes).
-        case downloading(String)
+        /// Human-readable stage of the model fetch (it runs for minutes),
+        /// with its real completion when the fetcher can report bytes.
+        case downloading(String, Double?)
         case verifying
         case done
         case failed(String)
@@ -307,13 +308,13 @@ public struct F5Installer: Sendable {
         // gigabytes over an unknown link, so a static spinner would be
         // indistinguishable from a hang.
         try? fm.removeItem(at: paths.progressFile)
-        progress(.downloading("Resolving model…"))
+        progress(.downloading("Resolving model…", nil))
         let watcher = Task.detached(priority: .utility) { [paths] in
-            var last = ""
+            var last: Stage?
             while !Task.isCancelled {
                 if let stage = Self.readProgress(at: paths.progressFile), stage != last {
                     last = stage
-                    progress(.downloading(stage))
+                    progress(.downloading(stage.message, stage.fraction))
                 }
                 try? await Task.sleep(for: .milliseconds(500))
             }
@@ -405,26 +406,42 @@ public struct F5Installer: Sendable {
         try encoder.encode(manifest).write(to: paths.manifest, options: .atomic)
     }
 
-    /// One human-readable line from the fetcher's progress file.
-    private static func readProgress(at url: URL) -> String? {
+    /// What the fetcher is doing, as the UI should say it.
+    struct Stage: Equatable {
+        let message: String
+        /// 0...1 once enough bytes are known to mean anything, else nil.
+        let fraction: Double?
+    }
+
+    /// One line from the fetcher's progress file. Internal so a test can
+    /// hold the Python side's exact output against it.
+    static func readProgress(at url: URL) -> Stage? {
         struct Raw: Decodable {
             let stage: String
             let detail: String?
+            let bytes: Int?
+            let total: Int?
         }
         guard let data = try? Data(contentsOf: url),
               let raw = try? JSONDecoder().decode(Raw.self, from: data) else { return nil }
-        let detail = (raw.detail?.isEmpty == false) ? " (\(raw.detail!))" : ""
+        let detail = (raw.detail?.isEmpty == false) ? " — \(raw.detail!)" : ""
+        var fraction: Double?
+        if let bytes = raw.bytes, let total = raw.total, total > 0 {
+            fraction = min(max(Double(bytes) / Double(total), 0), 1)
+        }
+        let message: String
         switch raw.stage {
-        case "resolving": return "Resolving model…"
-        case "config": return "Reading model config…"
-        case "downloading": return "Downloading Norwegian model\(detail)…"
-        case "vocab": return "Downloading vocabulary…"
-        case "reference": return "Downloading voice sample…"
-        case "normalizing": return "Preparing checkpoint…"
-        case "vocoder": return "Downloading vocoder…"
-        case "verifying", "done": return "Verifying checksums…"
+        case "resolving": message = "Resolving model…"
+        case "config": message = "Reading model config…"
+        case "downloading": message = "Downloading Norwegian model\(detail)"
+        case "vocab": message = "Downloading vocabulary…"
+        case "reference": message = "Downloading voice sample…"
+        case "normalizing": message = "Preparing checkpoint…"
+        case "vocoder": message = "Downloading vocoder…"
+        case "verifying", "done": message = "Verifying checksums…"
         default: return nil
         }
+        return Stage(message: message, fraction: fraction)
     }
 }
 

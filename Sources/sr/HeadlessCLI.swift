@@ -222,6 +222,11 @@ enum HeadlessCLI {
         if F5Runtime.shared.installer.needsUpdate {
             print("updating existing Norwegian voice…")
         }
+        // The download reports bytes about once a second. On a terminal that
+        // is a log, not a progress bar, so print a line only when the step
+        // changes or another 5% has landed.
+        var lastStage = ""
+        var lastPercent = -5
         for await progress in F5Runtime.shared.installer.install(
             daemonSourceURL: source,
             requirementsLockURL: requirementsLock,
@@ -229,7 +234,21 @@ enum HeadlessCLI {
             switch progress {
             case .creatingVenv: print("creating Python venv…")
             case .installingPackages: print("installing pinned f5-tts-mlx…")
-            case .downloading(let stage): print(stage)
+            case .downloading(let stage, let fraction):
+                guard let fraction else {
+                    if stage != lastStage {
+                        lastStage = stage
+                        lastPercent = -5
+                        print(stage)
+                    }
+                    break
+                }
+                let percent = Int(fraction * 100)
+                if stage != lastStage || percent >= lastPercent + 5 {
+                    lastStage = stage
+                    lastPercent = percent
+                    print("\(stage) — \(percent)%")
+                }
             case .verifying: print("verifying SHA-256…")
             case .done:
                 let voices = F5Runtime.shared.voices.voices()

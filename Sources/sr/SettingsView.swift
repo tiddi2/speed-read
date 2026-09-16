@@ -78,6 +78,7 @@ private struct GeneralSettings: View {
             Section("Offline voices") {
                 OfflineVoiceRow(
                     installStatus: state.kokoroInstallStatus,
+                    installError: state.kokoroInstallError,
                     isInstalled: state.kokoroInstalled && !state.kokoroNeedsUpdate,
                     installedLabel: "English (Kokoro) installed",
                     installTitle: state.kokoroNeedsUpdate
@@ -87,6 +88,7 @@ private struct GeneralSettings: View {
 
                 OfflineVoiceRow(
                     installStatus: state.f5InstallStatus,
+                    installError: state.f5InstallError,
                     isInstalled: state.f5Installed && !state.f5NeedsUpdate,
                     installedLabel: "Norwegian (F5-TTS) installed",
                     installTitle: state.f5NeedsUpdate
@@ -96,12 +98,8 @@ private struct GeneralSettings: View {
                     remove: state.f5Installed && state.f5InstallStatus == nil
                         ? { state.uninstallF5Norwegian() } : nil)
 
-                Text("Each voice downloads its own model from huggingface.co, once, when you ask for it. Kokoro speaks English with a fixed set of voices; the Norwegian model reads in the voice of a short recording you add under Voices. Removing the Norwegian model keeps your recordings.")
+                Text("Each voice downloads its own model from huggingface.co, once, when you ask for it. Installing needs [uv](https://docs.astral.sh/uv/) and keeps running if you close this window. Kokoro speaks English with a fixed set of voices; the Norwegian model reads in the voice of a short recording you add under Voices. Removing the Norwegian model keeps your recordings.")
                     .font(.caption).foregroundStyle(.secondary)
-                if state.f5InstallStatus != nil || state.kokoroInstallStatus != nil {
-                    Text("Installing needs uv (`curl -LsSf https://astral.sh/uv/install.sh | sh`) and stays running if you close this window.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
             }
 
             Section("Reader overlay") {
@@ -151,8 +149,14 @@ private struct GeneralSettings: View {
 /// One offline model: its install button, its progress, or the fact that it
 /// is already there. Both languages present identically — the difference
 /// between a fixed voice list and reference recordings belongs in Voices.
+///
+/// A multi-gigabyte download gets a real bar rather than a spinner, and a
+/// failure stays on screen. Both for the same reason: the install runs for
+/// minutes and the only thing worse than waiting is not knowing whether you
+/// are waiting or it already gave up.
 private struct OfflineVoiceRow: View {
-    let installStatus: String?
+    let installStatus: InstallStatus?
+    var installError: String? = nil
     let isInstalled: Bool
     let installedLabel: String
     let installTitle: String
@@ -161,9 +165,22 @@ private struct OfflineVoiceRow: View {
 
     var body: some View {
         if let installStatus {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text(installStatus).font(.callout).lineLimit(2)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    if installStatus.fraction == nil {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(installStatus.message).font(.callout).lineLimit(2)
+                    Spacer(minLength: 0)
+                    if let fraction = installStatus.fraction {
+                        Text("\(Int(fraction * 100))%")
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let fraction = installStatus.fraction {
+                    ProgressView(value: fraction)
+                }
             }
         } else if isInstalled {
             HStack {
@@ -176,7 +193,21 @@ private struct OfflineVoiceRow: View {
                 }
             }
         } else {
-            Button(installTitle, action: install)
+            VStack(alignment: .leading, spacing: 6) {
+                Button(installTitle, action: install)
+                if let installError {
+                    // Selectable: the useful failures name a command to run
+                    // (installing uv) or a path to look at.
+                    Label {
+                        Text(installError).textSelection(.enabled)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 }

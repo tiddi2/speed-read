@@ -5,6 +5,22 @@ import Foundation
 import SRCore
 import SwiftUI
 
+/// What an offline-voice install is doing right now.
+///
+/// `fraction` is the download's real progress when it is knowable and nil when
+/// it is not — a venv build has no meaningful percentage, and neither does
+/// Kokoro's snapshot download, which reports no bytes. Declared outside
+/// AppState so the Settings row can hold one without inheriting its isolation.
+struct InstallStatus: Equatable {
+    var message: String
+    var fraction: Double?
+
+    init(_ message: String, fraction: Double? = nil) {
+        self.message = message
+        self.fraction = fraction
+    }
+}
+
 /// Central controller: hotkeys → routing → capture → normalize → chunk →
 /// synthesize (cache-first, budgeted) → play. Owns all mutable app state.
 @MainActor
@@ -28,12 +44,20 @@ final class AppState: ObservableObject {
     @Published var availableVoices: [Voice] = ElevenLabsProvider.presetVoices
     private var voicesFetchedAt: Date?
     @Published var historyStatus: String = ""
-    @Published var kokoroInstallStatus: String?
+    @Published var kokoroInstallStatus: InstallStatus?
     @Published var kokoroInstalled = KokoroRuntime.shared.isInstalled
     @Published var kokoroNeedsUpdate = KokoroRuntime.shared.installer.needsUpdate
+    /// Why the last install attempt failed, kept until the next attempt.
+    ///
+    /// `lastError` flashes and clears, which is the right behavior for a read
+    /// that went wrong mid-sentence and the wrong one for a multi-minute
+    /// install: the message was on screen for a moment and the button came
+    /// back looking untouched, with no way to find out what happened.
+    @Published var kokoroInstallError: String?
     // The Norwegian offline voice is a separate download with a separate
     // model, so it gets its own install state rather than sharing Kokoro's.
-    @Published var f5InstallStatus: String?
+    @Published var f5InstallStatus: InstallStatus?
+    @Published var f5InstallError: String?
     @Published var f5Installed = F5Runtime.shared.isInstalled
     @Published var f5NeedsUpdate = F5Runtime.shared.installer.needsUpdate
     /// Reference recordings the Norwegian voice can read with. Mirrored here
@@ -1075,11 +1099,12 @@ final class AppState: ObservableObject {
         guard kokoroInstallStatus == nil else { return }
         guard let source = daemonScriptSource(),
               let requirementsLock = requirementsLockSource() else {
-            lastError = "Local voice installer resources are missing from the app bundle."
-            flashStatus(lastError!)
+            kokoroInstallError = "Installer resources are missing from the app bundle."
+            flashStatus(kokoroInstallError!)
             return
         }
-        kokoroInstallStatus = "Starting…"
+        kokoroInstallError = nil
+        kokoroInstallStatus = InstallStatus("Starting…")
         // Strong capture: install must outlive any UI churn, and AppState
         // lives for the app's lifetime.
         installTask = Task { [self] in
@@ -1088,10 +1113,14 @@ final class AppState: ObservableObject {
                 daemonSourceURL: source,
                 requirementsLockURL: requirementsLock) {
                 switch progress {
-                case .creatingVenv: kokoroInstallStatus = "Creating Python environment…"
-                case .installingPackages: kokoroInstallStatus = "Installing mlx-audio…"
-                case .downloadingModel: kokoroInstallStatus = "Downloading Kokoro model (~330 MB)…"
-                case .verifying: kokoroInstallStatus = "Verifying checksums…"
+                case .creatingVenv:
+                    kokoroInstallStatus = InstallStatus("Creating Python environment…")
+                case .installingPackages:
+                    kokoroInstallStatus = InstallStatus("Installing mlx-audio…")
+                case .downloadingModel:
+                    kokoroInstallStatus = InstallStatus("Downloading Kokoro model (~330 MB)…")
+                case .verifying:
+                    kokoroInstallStatus = InstallStatus("Verifying checksums…")
                 case .done:
                     kokoroInstallStatus = nil
                     kokoroInstalled = true
@@ -1099,8 +1128,8 @@ final class AppState: ObservableObject {
                     flashStatus("Local voice installed")
                 case .failed(let message):
                     kokoroInstallStatus = nil
-                    lastError = "Local install failed: \(message)"
-                    flashStatus(lastError ?? "Install failed")
+                    kokoroInstallError = message
+                    flashStatus("Install failed")
                 }
             }
         }
@@ -1142,11 +1171,12 @@ final class AppState: ObservableObject {
         guard let daemon = daemonScriptSource(),
               let requirementsLock = requirementsLockSource(),
               let fetcher = f5FetchScriptSource() else {
-            lastError = "Local voice installer resources are missing from the app bundle."
-            flashStatus(lastError!)
+            f5InstallError = "Installer resources are missing from the app bundle."
+            flashStatus(f5InstallError!)
             return
         }
-        f5InstallStatus = "Starting…"
+        f5InstallError = nil
+        f5InstallStatus = InstallStatus("Starting…")
         // Strong capture, like the Kokoro install: this runs for minutes and
         // must outlive any UI churn.
         f5InstallTask = Task { [self] in
@@ -1156,10 +1186,14 @@ final class AppState: ObservableObject {
                 requirementsLockURL: requirementsLock,
                 fetchSourceURL: fetcher) {
                 switch progress {
-                case .creatingVenv: f5InstallStatus = "Creating Python environment…"
-                case .installingPackages: f5InstallStatus = "Installing f5-tts-mlx…"
-                case .downloading(let stage): f5InstallStatus = stage
-                case .verifying: f5InstallStatus = "Verifying checksums…"
+                case .creatingVenv:
+                    f5InstallStatus = InstallStatus("Creating Python environment…")
+                case .installingPackages:
+                    f5InstallStatus = InstallStatus("Installing f5-tts-mlx…")
+                case .downloading(let stage, let fraction):
+                    f5InstallStatus = InstallStatus(stage, fraction: fraction)
+                case .verifying:
+                    f5InstallStatus = InstallStatus("Verifying checksums…")
                 case .done:
                     f5InstallStatus = nil
                     await finishF5InstallChange()
@@ -1168,8 +1202,8 @@ final class AppState: ObservableObject {
                         : "Norwegian offline voice installed")
                 case .failed(let message):
                     f5InstallStatus = nil
-                    lastError = "Norwegian voice install failed: \(message)"
-                    flashStatus(lastError ?? "Install failed")
+                    f5InstallError = message
+                    flashStatus("Install failed")
                 }
             }
         }

@@ -39,6 +39,7 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 # Weights we must not mistake for the acoustic model.
@@ -62,10 +63,14 @@ DEFAULT_ARCH = {
 }
 
 
-def _progress(path, stage, detail=""):
+def _progress(path, stage, detail="", done_bytes=None, total_bytes=None):
     if not path:
         return
     payload = {"stage": stage, "detail": detail}
+    if done_bytes is not None:
+        payload["bytes"] = int(done_bytes)
+    if total_bytes:
+        payload["total"] = int(total_bytes)
     try:
         tmp = f"{path}.tmp"
         with open(tmp, "w") as f:
@@ -73,6 +78,57 @@ def _progress(path, stage, detail=""):
         os.replace(tmp, path)
     except OSError:
         pass
+
+
+def human_bytes(count):
+    # Decimal units, because that is what macOS and Hugging Face both show.
+    if count >= 1_000_000_000:
+        return f"{count / 1e9:.1f} GB"
+    if count >= 1_000_000:
+        return f"{count / 1e6:.0f} MB"
+    return f"{count / 1e3:.0f} KB"
+
+
+def _inflight_bytes(cache_root):
+    """Largest partial download currently on disk, in bytes.
+
+    huggingface_hub offers no byte callback, and its progress bar writes to a
+    stderr the installer captures whole rather than streams. The bytes are
+    observable anyway: every backend writes into the cache before moving the
+    finished blob into place, so watching the partial file is backend-agnostic
+    in a way that hooking the download loop would not be. The glob is aimed
+    straight at `<cache>/<repo>/blobs/*.incomplete` rather than walking the
+    tree, so polling it every second stays cheap on a large cache.
+    """
+    import glob
+
+    best = 0
+    pattern = os.path.join(cache_root, "*", "blobs", "*.incomplete")
+    for path in glob.glob(pattern):
+        try:
+            best = max(best, os.path.getsize(path))
+        except OSError:
+            pass
+    return best
+
+
+def _watch_download(progress_path, stage, total_bytes, stop):
+    """Publish download progress until `stop` is set."""
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE as cache_root
+    except Exception:  # noqa: BLE001 — progress is never worth failing over
+        return
+    while not stop.wait(1.0):
+        try:
+            done = _inflight_bytes(cache_root)
+        except OSError:
+            continue
+        if not done:
+            continue
+        detail = human_bytes(done)
+        if total_bytes:
+            detail = f"{detail} of {human_bytes(total_bytes)}"
+        _progress(progress_path, stage, detail, done, total_bytes)
 
 
 def sha256_of(path):
@@ -309,12 +365,24 @@ def main():
             arch_source = name
             break
 
-    # Show the size rather than the file name: this is the step that runs for
-    # minutes, and "1.4 GB" is what tells the user the wait is expected.
+    # The step that runs for minutes. A static "downloading…" here is
+    # indistinguishable from a hang, so watch the bytes land while it runs.
     weights_bytes = sizes.get(weights_name) or 0
-    weights_path = fetch(
-        weights_name, "downloading",
-        detail=f"{weights_bytes / 1e9:.1f} GB" if weights_bytes else None)
+    _progress(args.progress, "downloading",
+              human_bytes(weights_bytes) if weights_bytes else "", 0, weights_bytes)
+    stop_watching = threading.Event()
+    watcher = threading.Thread(
+        target=_watch_download,
+        args=(args.progress, "downloading", weights_bytes, stop_watching),
+        daemon=True)
+    watcher.start()
+    try:
+        weights_path = fetch(
+            weights_name, "downloading",
+            detail=human_bytes(weights_bytes) if weights_bytes else None)
+    finally:
+        stop_watching.set()
+        watcher.join(timeout=3)
     vocab_path = fetch(vocab_name, "vocab")
 
     reference = None

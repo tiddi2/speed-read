@@ -127,6 +127,25 @@ enum F5TestSupport {
         return try FetchReport.load(from: url).arch?.variant
     }
 
+    // MARK: - Download progress
+
+    /// Feed the fetcher's exact progress JSON through the installer's reader.
+    ///
+    /// Flattened into three fields rather than an optional tuple so the tests
+    /// never have to reach through two layers of Optional to assert on a
+    /// fraction that is itself optional.
+    static func readProgress(_ json: String) throws
+        -> (found: Bool, message: String, fraction: Double?) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sr-f5-progress-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(json.utf8).write(to: url)
+        guard let stage = F5Installer.readProgress(at: url) else {
+            return (false, "", nil)
+        }
+        return (true, stage.message, stage.fraction)
+    }
+
     // MARK: - Voice store
 
     /// Minimal 16-bit mono WAV of `seconds` at `rate`, quiet but not silent.

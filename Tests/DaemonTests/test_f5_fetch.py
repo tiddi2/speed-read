@@ -163,5 +163,50 @@ class JsonConfigNullTests(unittest.TestCase):
         self.assertIs(arch["text_mask_padding"], True)
 
 
+class DownloadProgressTests(unittest.TestCase):
+    """The installer polls a file for this; a hang and a slow link look the
+    same without it."""
+
+    def test_sizes_are_rendered_in_the_units_macos_shows(self):
+        self.assertEqual(fetch.human_bytes(1_400_000_000), "1.4 GB")
+        self.assertEqual(fetch.human_bytes(412_000_000), "412 MB")
+        self.assertEqual(fetch.human_bytes(5_000), "5 KB")
+
+    def test_finds_the_partial_download_in_the_hub_cache(self):
+        import os
+
+        root = pathlib.Path(tempfile.mkdtemp())
+        blobs = root / "models--akhbar--F5_Norwegian" / "blobs"
+        blobs.mkdir(parents=True)
+        (blobs / "abc123.incomplete").write_bytes(b"x" * 4096)
+        # A finished blob is not progress, and neither is a file elsewhere.
+        (blobs / "abc123").write_bytes(b"x" * 99_999)
+        (root / "stray.incomplete").write_bytes(b"x" * 50_000)
+        self.assertEqual(fetch._inflight_bytes(str(root)), 4096)
+
+    def test_reports_nothing_when_no_download_is_in_flight(self):
+        self.assertEqual(fetch._inflight_bytes(tempfile.mkdtemp()), 0)
+
+    def test_progress_file_carries_the_byte_counts(self):
+        import json
+
+        path = pathlib.Path(tempfile.mkdtemp()) / "download.progress"
+        fetch._progress(str(path), "downloading", "412 MB of 1.4 GB",
+                        412_000_000, 1_400_000_000)
+        payload = json.loads(path.read_text())
+        self.assertEqual(payload["bytes"], 412_000_000)
+        self.assertEqual(payload["total"], 1_400_000_000)
+        self.assertEqual(payload["stage"], "downloading")
+
+    def test_a_step_with_no_byte_count_omits_the_fields(self):
+        import json
+
+        path = pathlib.Path(tempfile.mkdtemp()) / "download.progress"
+        fetch._progress(str(path), "normalizing")
+        payload = json.loads(path.read_text())
+        self.assertNotIn("bytes", payload)
+        self.assertNotIn("total", payload)
+
+
 if __name__ == "__main__":
     unittest.main()
