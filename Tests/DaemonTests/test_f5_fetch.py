@@ -208,5 +208,102 @@ class DownloadProgressTests(unittest.TestCase):
         self.assertNotIn("total", payload)
 
 
+class VocabResolutionTests(unittest.TestCase):
+    """A repo that never changed the stock vocabulary often does not ship one,
+    and the wrong vocabulary produces confident nonsense rather than an error."""
+
+    def _checkpoint(self, rows):
+        import json
+
+        header = {
+            "ema_model.transformer.text_embed.text_embed.weight":
+                {"dtype": "F32", "shape": [rows, 512], "data_offsets": [0, 0]}
+        }
+        blob = json.dumps(header).encode()
+        path = pathlib.Path(tempfile.mkdtemp()) / "model_v1.safetensors"
+        path.write_bytes(len(blob).to_bytes(8, "little") + blob)
+        return path
+
+    def _vocab(self, entries):
+        path = pathlib.Path(tempfile.mkdtemp()) / "vocab.txt"
+        path.write_text("\n".join(str(i) for i in range(entries - 1)) + "\n")
+        return path
+
+    def _stub_canonical(self, entries):
+        """Stand in for the network fetch, so tests do not need GitHub."""
+        from unittest.mock import patch
+
+        source = self._vocab(entries)
+
+        def fake(destination):
+            pathlib.Path(destination).write_bytes(source.read_bytes())
+
+        return patch.object(fetch, "fetch_canonical_vocab", fake)
+
+    def test_reads_the_vocabulary_size_out_of_the_checkpoint_header(self):
+        # One short read rather than loading 1.4 GB.
+        self.assertEqual(fetch.text_embed_rows(self._checkpoint(2546)), 2546)
+
+    def test_an_unreadable_checkpoint_reports_no_expectation(self):
+        self.assertIsNone(fetch.text_embed_rows(__file__))
+
+    def test_falls_back_to_the_stock_vocabulary_when_the_repo_has_none(self):
+        dest = pathlib.Path(tempfile.mkdtemp()) / "model"
+        dest.mkdir(parents=True)
+        with self._stub_canonical(2546):
+            path, source = fetch.resolve_vocab(
+                None, None, self._checkpoint(2546), None, dest)
+        self.assertIn("SWivid/F5-TTS", source)
+        self.assertEqual(fetch.vocab_entries(path), 2546)
+
+    def test_a_vocabulary_of_the_wrong_size_is_refused(self):
+        dest = pathlib.Path(tempfile.mkdtemp()) / "model"
+        dest.mkdir(parents=True)
+        with self._stub_canonical(2546):
+            with self.assertRaises(RuntimeError) as caught:
+                fetch.resolve_vocab(None, None, self._checkpoint(120), None, dest)
+        # The message has to carry the number, or the next step is guesswork.
+        self.assertIn("120", str(caught.exception))
+        self.assertIn("Community", str(caught.exception))
+
+    def test_the_repos_own_vocabulary_wins_when_it_fits(self):
+        dest = pathlib.Path(tempfile.mkdtemp()) / "model"
+        dest.mkdir(parents=True)
+        own = self._vocab(120)
+        with self._stub_canonical(2546):
+            path, source = fetch.resolve_vocab(
+                own, "vocab.txt", self._checkpoint(120), None, dest)
+        self.assertEqual(source, "vocab.txt")
+        self.assertEqual(str(path), str(own))
+
+    def test_a_hand_supplied_vocabulary_beats_both(self):
+        base = pathlib.Path(tempfile.mkdtemp())
+        (base / "model").mkdir()
+        (base / "vocab-override.txt").write_text(
+            "\n".join(str(i) for i in range(119)) + "\n")
+        with self._stub_canonical(2546):
+            path, source = fetch.resolve_vocab(
+                self._vocab(2546), "vocab.txt", self._checkpoint(120),
+                None, base / "model")
+        self.assertIn("supplied by hand", source)
+        self.assertEqual(fetch.vocab_entries(path), 120)
+
+    def test_a_missing_trailing_newline_still_counts_as_a_match(self):
+        path = pathlib.Path(tempfile.mkdtemp()) / "vocab.txt"
+        path.write_text("\n".join(str(i) for i in range(120)))  # no final newline
+        self.assertTrue(fetch.fits(path, 120))
+        self.assertFalse(fetch.fits(path, 200))
+
+    def test_an_unknown_expectation_blocks_nothing(self):
+        # An unreadable header is not evidence of a mismatch.
+        self.assertTrue(fetch.fits(self._vocab(7), None))
+
+    def test_the_stock_vocabulary_is_pinned_by_content(self):
+        self.assertRegex(fetch.CANONICAL_VOCAB_SHA256, r"^[0-9a-f]{64}$")
+        self.assertIn("SWivid/F5-TTS", fetch.CANONICAL_VOCAB_URL)
+        # The LF copy: the CRLF one under data/ carries a \r into every symbol.
+        self.assertIn("infer/examples", fetch.CANONICAL_VOCAB_URL)
+
+
 if __name__ == "__main__":
     unittest.main()

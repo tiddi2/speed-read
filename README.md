@@ -140,7 +140,13 @@ community fine-tune that names no stable revision and follows no file-naming
 convention, so its installer resolves the layout at install time — checkpoint,
 vocabulary, any config, any sample — verifies each download against
 huggingface.co's own SHA-256 for it, and records the commit it resolved plus a
-hash of every file it wrote. That record is re-checked on each launch. It is a
+hash of every file it wrote. A repo that never changed the stock character
+vocabulary often does not ship one; sr then falls back to F5-TTS's own,
+pinned by content hash, and checks it against the checkpoint's text embedding
+so a vocabulary of the wrong size is refused rather than used. If that check
+fails and the right vocabulary is posted in the model repo's Community tab,
+save it to `~/Library/Application Support/sr/f5/vocab-override.txt` and
+install again. That record is re-checked on each launch. It is a
 weaker guarantee than Kokoro's until you make it stronger, which takes one
 command: `make pin-f5-model` prints the resolved commit as Swift constants to
 paste into `Sources/SRCore/F5/F5Installer.swift`, after which every install
@@ -185,7 +191,7 @@ CLI (same binary):
 |---|---|
 | `api.elevenlabs.io` | Cloud synthesis, voice list, credits, history deletion, phoneme pronunciation dictionaries |
 | `huggingface.co` | Only during an explicit offline-voice install |
-| `github.com` / PyPI | Only during an explicit offline-voice install (pinned Python packages) |
+| `github.com` / PyPI | Only during an explicit offline-voice install (pinned Python packages, and the stock F5-TTS vocabulary when the model repo omits it) |
 
 Local synthesis runs in a supervised daemon bound to a Unix socket (0600) with per-launch auth, bounded pre-auth connections, request-size limits, verified-model-only startup, and parent/idle watchdogs — no network listener, ever.
 

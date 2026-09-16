@@ -38,6 +38,22 @@
   Hugging Face cache, so it rebuilds the environment rather than
   re-downloading anything. Until then, English reads fall back to the cloud.
 
+- A model repo that ships no `vocab.txt` no longer stops the install.
+  akhbar/F5_Norwegian does not ship one, and the installer treated that as
+  fatal — but most F5 trainings use the stock character vocabulary unchanged,
+  and a repo that never changed it often does not bother to include it. sr now
+  falls back to F5-TTS's own vocabulary, pinned by content hash rather than by
+  commit, since what matters is the bytes.
+
+  Falling back is only safe if it can be checked, so it is: the checkpoint's
+  text-embedding size is the vocabulary size it was trained with, and sr reads
+  it from the safetensors header — one short read rather than loading 1.4 GB —
+  and refuses a vocabulary that does not match. A wrong vocabulary does not
+  fail at synthesis time, it produces confident nonsense, so this is the only
+  point where it can be caught. The refusal names both numbers, and points at
+  `~/Library/Application Support/sr/f5/vocab-override.txt` for a vocabulary
+  obtained some other way — from the repo's Community tab, say.
+
 - An offline-voice install no longer inherits the user's uv settings. uv reads
   `UV_*` from the environment as well as from `uv.toml`, and sr passed its
   whole environment through — so a `UV_EXCLUDE_NEWER` left in a login shell

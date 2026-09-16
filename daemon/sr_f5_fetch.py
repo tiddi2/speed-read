@@ -40,12 +40,26 @@ import shutil
 import sys
 import tempfile
 import threading
+import urllib.request
 from pathlib import Path
 
 # Weights we must not mistake for the acoustic model.
 _NOT_WEIGHTS = ("duration", "vocos", "vocoder", "optimizer", "vocab")
 _AUDIO_SUFFIXES = (".wav", ".mp3", ".flac", ".m4a", ".ogg")
 _TRANSCRIPT_SUFFIXES = (".txt", ".lab")
+
+# Most F5 trainings use the stock character vocabulary unchanged, and a repo
+# that did not change it often does not bother to ship it. Pinned by content
+# hash rather than by commit: what matters is the bytes, and a change upstream
+# should stop the install rather than silently alter how text is tokenized.
+CANONICAL_VOCAB_URL = (
+    "https://raw.githubusercontent.com/SWivid/F5-TTS/main/"
+    "src/f5_tts/infer/examples/vocab.txt"
+)
+CANONICAL_VOCAB_SHA256 = \
+    "4e173934be56219eb38759fa8d4c48132d5a34454f0c44abce409bcf6a07ec46"
+# The LF copy, deliberately: the CRLF one under data/ carries a \r into every
+# symbol and would tokenize nothing correctly.
 
 # F5-TTS Base ("v0") vs F5-TTS v1 Base. Identical tensor shapes, different
 # text masking and rotary-embedding placement, so the checkpoint cannot tell
@@ -129,6 +143,42 @@ def _watch_download(progress_path, stage, total_bytes, stop):
         if total_bytes:
             detail = f"{detail} of {human_bytes(total_bytes)}"
         _progress(progress_path, stage, detail, done, total_bytes)
+
+
+def fetch_canonical_vocab(destination):
+    """Download the stock F5-TTS vocabulary, refusing anything unexpected."""
+    with urllib.request.urlopen(CANONICAL_VOCAB_URL, timeout=60) as response:
+        body = response.read()
+    digest = hashlib.sha256(body).hexdigest()
+    if digest != CANONICAL_VOCAB_SHA256:
+        raise RuntimeError(
+            "the stock F5-TTS vocabulary does not match its pinned checksum "
+            f"(expected {CANONICAL_VOCAB_SHA256}, got {digest})")
+    Path(destination).write_bytes(body)
+
+
+def text_embed_rows(safetensors_path):
+    """Rows in the checkpoint's text embedding, read from the header alone.
+
+    A safetensors file starts with its header length and a JSON header of
+    tensor shapes, so this costs one short read rather than loading 1.4 GB.
+    The row count is the vocabulary size the checkpoint was trained with,
+    which is the only way to tell a matching vocabulary from a wrong one.
+    """
+    try:
+        with open(safetensors_path, "rb") as f:
+            length = int.from_bytes(f.read(8), "little")
+            if not 0 < length < 100_000_000:
+                return None
+            header = json.loads(f.read(length))
+    except (OSError, ValueError):
+        return None
+    for key, meta in header.items():
+        if key.endswith("text_embed.text_embed.weight") and isinstance(meta, dict):
+            shape = meta.get("shape") or []
+            if shape:
+                return int(shape[0])
+    return None
 
 
 def sha256_of(path):
@@ -306,6 +356,69 @@ def normalize_weights(source, destination):
     return "converted"
 
 
+def resolve_vocab(repo_vocab, repo_vocab_name, checkpoint, progress_path, scratch):
+    """Pick the vocabulary this checkpoint was trained with, and prove it fits.
+
+    In order: one the user supplied, the repo's own, then the stock F5-TTS
+    one. Whichever is chosen is checked against the checkpoint's text
+    embedding — a vocabulary of the wrong size is the wrong vocabulary, and
+    it would produce confident nonsense rather than an error at synthesis
+    time. Returns (path, human-readable source).
+    """
+    override = os.environ.get("SR_F5_VOCAB", "") or str(
+        Path(scratch).parent / "vocab-override.txt")
+    candidates = []
+    if os.path.isfile(override):
+        candidates.append((override, f"supplied by hand ({override})"))
+    if repo_vocab:
+        candidates.append((str(repo_vocab), repo_vocab_name))
+
+    expected = text_embed_rows(checkpoint)
+
+    for path, source in candidates:
+        if fits(path, expected):
+            return path, source
+
+    # Nothing local fit — or there was nothing local. Try the stock one.
+    if not candidates or expected is not None:
+        _progress(progress_path, "vocab", "stock F5-TTS vocabulary")
+        fallback = Path(tempfile.mkdtemp()) / "vocab.txt"
+        fetch_canonical_vocab(fallback)
+        if fits(fallback, expected):
+            return str(fallback), "SWivid/F5-TTS (stock vocabulary)"
+
+    found = ", ".join(
+        f"{source} has {vocab_entries(path)}" for path, source in candidates
+    ) or "the repo ships none"
+    raise RuntimeError(
+        "could not find the vocabulary this checkpoint was trained with: it "
+        f"expects {expected if expected is not None else 'an unknown number of'} "
+        f"symbols, and {found}. If one is posted in the model repo's Community "
+        "tab, save it to "
+        f"{Path(scratch).parent / 'vocab-override.txt'} and install again.")
+
+
+def vocab_entries(path):
+    """How many symbols a vocabulary file defines, counted as the model does."""
+    try:
+        return len(Path(path).read_text(encoding="utf-8").split("\n"))
+    except OSError:
+        return 0
+
+
+def fits(path, expected):
+    """Whether a vocabulary matches the checkpoint's embedding.
+
+    Unknown expectation means an unreadable checkpoint header rather than a
+    mismatch, so anything is allowed through rather than blocking the
+    install on a check that could not run. The one-symbol tolerance covers a
+    file saved without a trailing newline.
+    """
+    if expected is None:
+        return True
+    return abs(vocab_entries(path) - expected) <= 1
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 
@@ -341,8 +454,6 @@ def main():
     vocab_name = pick_vocab(names)
     if not weights_name:
         raise RuntimeError("no model checkpoint found in the repo")
-    if not vocab_name:
-        raise RuntimeError("no vocab.txt found in the repo")
 
     dest = Path(args.dest)
     dest.mkdir(parents=True, exist_ok=True)
@@ -383,7 +494,10 @@ def main():
     finally:
         stop_watching.set()
         watcher.join(timeout=3)
-    vocab_path = fetch(vocab_name, "vocab")
+    # A repo that never changed the stock vocabulary often does not ship one.
+    # Resolving it is deferred until the checkpoint is on disk, because the
+    # checkpoint is the only thing that can say whether a vocabulary fits.
+    vocab_path = fetch(vocab_name, "vocab") if vocab_name else None
 
     reference = None
     audio_name, text_name = pick_reference(names)
@@ -410,6 +524,9 @@ def main():
     except BaseException:
         staged.unlink(missing_ok=True)
         raise
+    vocab_path, vocab_source = resolve_vocab(
+        vocab_path, vocab_name, dest / "model_v1.safetensors",
+        args.progress, dest)
     shutil.copyfile(vocab_path, dest / "vocab.txt")
 
     _progress(args.progress, "vocoder")
@@ -433,7 +550,7 @@ def main():
         "weights_source": weights_name,
         "weights_mode": mode,
         "weights_bytes": weights_bytes,
-        "vocab_source": vocab_name,
+        "vocab_source": vocab_source,
         "arch": arch,
         "arch_source": arch_source,
         "reference": reference,
