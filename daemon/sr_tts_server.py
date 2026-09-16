@@ -37,6 +37,7 @@ Modes:
 Logging is content-free (P-5): text lengths only, never text.
 """
 
+import contextlib
 import fcntl
 import json
 import os
@@ -79,6 +80,11 @@ F5_MODEL_PATH = os.environ.get("SR_F5_MODEL_PATH", "")
 F5_VOCODER_PATH = os.environ.get("SR_F5_VOCODER_PATH", "")
 F5_VOICES_PATH = os.environ.get("SR_F5_VOICES_PATH", "")
 F5_ARCH_JSON = os.environ.get("SR_F5_ARCH", "")
+
+# Every way these can fail has the same fix, so they get one wording each
+# rather than a class name the user cannot act on.
+MODEL_FILES_DAMAGED = "the Norwegian model files are missing or damaged"
+VOCODER_DAMAGED = "the mel vocoder is missing or damaged"
 
 F5_SAMPLE_RATE = 24_000
 F5_HOP_LENGTH = 256
@@ -211,6 +217,46 @@ class EngineError(Exception):
     which of a dozen setup problems to fix. Never raise this with a message
     built from a request field.
     """
+
+
+# Memory exhaustion arrives as a different exception per allocator — Python's
+# MemoryError, or one of Metal's, whose class is a bare RuntimeError. Only the
+# fact is used; the message itself is never relayed.
+_OUT_OF_MEMORY_MARKERS = (
+    "out of memory", "insufficient memory", "attempting to allocate",
+    "failed to allocate", "maximum allowed buffer size",
+)
+
+
+def _is_out_of_memory(exc):
+    if isinstance(exc, MemoryError):
+        return True
+    return any(marker in str(exc).lower() for marker in _OUT_OF_MEMORY_MARKERS)
+
+
+@contextlib.contextmanager
+def during(step, diagnosis=None):
+    """Name the phase an unexpected failure happened in.
+
+    The generic handler reports an unexpected exception by class name alone,
+    which for `RuntimeError` — what mlx raises for a missing, truncated or
+    unreadable model file, and what soundfile raises for an unreadable clip —
+    is the entire story the user gets. These are the phases that fail for
+    ordinary reasons having nothing to do with the text being read, so each
+    says what it was doing. `diagnosis` replaces that with a condition the
+    user can act on, for phases where every way of failing has the same fix.
+    Both are literals written here, never built from a request field, so the
+    wire message stays content-free; the class and frames go to the log.
+    """
+    try:
+        yield
+    except (EngineError, CancelledError):
+        raise
+    except Exception as exc:
+        log(f"error while {step}: {type(exc).__name__} at {_traceback_frames(exc)}")
+        if _is_out_of_memory(exc):
+            raise EngineError(f"ran out of memory while {step}") from None
+        raise EngineError(diagnosis or f"{type(exc).__name__} while {step}") from None
 
 
 def _generate_segments(text, voice, speed, lang_code, cancel_check, depth=0):
@@ -499,13 +545,25 @@ def load_f5_model():
 
         log("f5: loading weights")
         weights_path = os.path.join(F5_MODEL_PATH, "model_v1.safetensors")
-        with open(os.path.join(F5_MODEL_PATH, "vocab.txt"), encoding="utf-8") as f:
-            entries = f.read().split("\n")
+        vocab_path = os.path.join(F5_MODEL_PATH, "vocab.txt")
+        # Say which file is gone before mlx does. Its own answer to a missing
+        # or truncated checkpoint is a bare RuntimeError, which reaches the
+        # menu bar as "(RuntimeError)" and names neither the file nor the fix.
+        _require_files(MODEL_FILES_DAMAGED, weights_path, vocab_path)
+        _require_files(
+            VOCODER_DAMAGED,
+            os.path.join(F5_VOCODER_PATH, "model.safetensors"),
+            os.path.join(F5_VOCODER_PATH, "config.yaml"))
+
+        with during("reading the Norwegian vocabulary", MODEL_FILES_DAMAGED):
+            with open(vocab_path, encoding="utf-8") as f:
+                entries = f.read().split("\n")
         vocab = {char: index for index, char in enumerate(entries)}
         if not vocab:
             raise EngineError("f5 vocabulary is empty")
 
-        weights = _f5_convert_weights(mx.load(weights_path, format="safetensors"))
+        with during("reading the Norwegian model weights", MODEL_FILES_DAMAGED):
+            weights = _f5_convert_weights(mx.load(weights_path, format="safetensors"))
 
         # Size the text embedding from the checkpoint rather than from the
         # vocabulary file: whether vocab.txt ends in a newline changes the
@@ -515,7 +573,8 @@ def load_f5_model():
             embedding.shape[0] - 1 if embedding is not None else len(vocab) - 1
         )
 
-        vocos = Vocos.from_pretrained(F5_VOCODER_PATH)
+        with during("loading the mel vocoder", VOCODER_DAMAGED):
+            vocos = Vocos.from_pretrained(F5_VOCODER_PATH)
         f5 = F5TTS(
             transformer=DiT(
                 dim=int(arch["dim"]),
@@ -530,11 +589,35 @@ def load_f5_model():
             vocab_char_map=vocab,
             vocoder=vocos.decode,
         )
-        f5.load_weights(list(weights.items()))
-        mx.eval(f5.parameters())
+        with during("fitting the weights to the model"):
+            try:
+                f5.load_weights(list(weights.items()))
+            except ValueError as error:
+                # Tensor names or shapes the architecture does not have: the
+                # checkpoint is being loaded as something it is not. The one
+                # F5 failure whose fix is neither "reinstall" nor "free some
+                # memory", so it gets its own wording.
+                log(f"f5: weights do not fit the model "
+                    f"({_traceback_frames(error, 1)})")
+                raise EngineError(
+                    "checkpoint does not fit the F5 architecture") from None
+        with during("preparing the Norwegian model"):
+            mx.eval(f5.parameters())
         f5_model = f5
         log(f"f5: model loaded (vocab={len(vocab)} embeds={text_num_embeds})")
         return f5_model
+
+
+def _require_files(diagnosis, *paths):
+    """Refuse early, by name, when a verified file is gone or truncated."""
+    for path in paths:
+        try:
+            if os.path.getsize(path) > 0:
+                continue
+        except OSError:
+            pass
+        log(f"f5: missing or empty {os.path.basename(path)}")
+        raise EngineError(diagnosis)
 
 
 def _f5_reference(voice):
@@ -566,7 +649,14 @@ def _f5_reference(voice):
     if cached and cached[0] == stamp:
         return cached[1]
 
-    audio, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
+    try:
+        audio, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
+    except Exception as error:
+        # soundfile's own failure is a RuntimeError subclass, and its message
+        # quotes the path — so name the condition instead and let the log
+        # carry the class.
+        log(f"f5: unreadable reference clip ({type(error).__name__})")
+        raise EngineError("reference recording could not be read") from None
     if sample_rate != F5_SAMPLE_RATE:
         raise EngineError("reference recording is not 24 kHz")
     audio = audio.mean(axis=1) if audio.shape[1] > 1 else audio[:, 0]
@@ -635,20 +725,21 @@ def _f5_generate_segments(text, voice, cancel_check, depth=0):
 
     # Speed is always 1.0 — sr applies playback rate client-side (F-8), so
     # cached audio stays rate-agnostic.
-    conditioned = convert_char_to_pinyin([ref_text + " " + text])
-    wave, _ = f5.sample(
-        mx.expand_dims(reference, axis=0),
-        text=conditioned,
-        duration=min(frames, F5_MAX_FRAMES),
-        steps=F5_STEPS,
-        method="rk4",
-        cfg_strength=2.0,
-        sway_sampling_coef=-1.0,
-        speed=1.0,
-    )
-    # The model continues the reference clip; drop the part we fed it.
-    wave = wave[reference.shape[0]:]
-    mx.eval(wave)
+    with during("generating Norwegian speech"):
+        conditioned = convert_char_to_pinyin([ref_text + " " + text])
+        wave, _ = f5.sample(
+            mx.expand_dims(reference, axis=0),
+            text=conditioned,
+            duration=min(frames, F5_MAX_FRAMES),
+            steps=F5_STEPS,
+            method="rk4",
+            cfg_strength=2.0,
+            sway_sampling_coef=-1.0,
+            speed=1.0,
+        )
+        # The model continues the reference clip; drop the part we fed it.
+        wave = wave[reference.shape[0]:]
+        mx.eval(wave)
 
     audio = np.array(wave, copy=True).astype(np.float32)
     if rms_scale != 1.0:
@@ -808,9 +899,13 @@ def handle_client(conn):
         # frames are our own and the libraries' file names and line numbers,
         # which carry no request text and are what makes an unexpected
         # failure diagnosable at all — without them "RuntimeError" is the
-        # whole story.
-        log(f"error: {type(e).__name__} at {_traceback_frames(e)}")
-        send({"status": "error", "message": type(e).__name__})
+        # whole story. They go on the wire for the same reason: someone
+        # reading the error in the menu bar should not have to open a log to
+        # learn which of a dozen unrelated failures they hit.
+        frames = _traceback_frames(e)
+        log(f"error: {type(e).__name__} at {frames}")
+        send({"status": "error",
+              "message": f"{type(e).__name__} at {_traceback_frames(e, limit=2)}"})
     finally:
         try:
             conn.close()

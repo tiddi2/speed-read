@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import pathlib
 import unittest
+import unittest.mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -228,7 +229,11 @@ class EngineRoutingTests(unittest.TestCase):
                          "voice is missing its reference recording")
 
     def test_unexpected_exceptions_still_hide_their_message(self):
-        """P-5: an exception sr did not author may quote the text being read."""
+        """P-5: an exception sr did not author may quote the text being read.
+
+        Its class and the frames it came from cannot, and those are what make
+        the difference between a name to look up and a name to guess at.
+        """
         def boom(*_a, **_k):
             raise ValueError("secret text the user selected")
 
@@ -237,8 +242,10 @@ class EngineRoutingTests(unittest.TestCase):
              "engine": "f5"},
             f5_configured=lambda: True, generate_audio=boom)
         self.assertEqual(response["status"], "error")
-        self.assertEqual(response["message"], "ValueError")
         self.assertNotIn("secret", str(response))
+        self.assertTrue(response["message"].startswith("ValueError at "),
+                        response["message"])
+        self.assertIn("test_server.py:", response["message"])
 
     def test_traceback_frames_name_places_not_content(self):
         try:
@@ -282,3 +289,79 @@ class F5ArchTests(unittest.TestCase):
 
     def test_unparseable_json_falls_back_to_defaults(self):
         self.assertEqual(self._arch("{not json"), server.F5_DEFAULT_ARCH)
+
+
+class NamedFailureTests(unittest.TestCase):
+    """An offline failure has to name itself.
+
+    mlx answers a missing, truncated or unreadable checkpoint with a bare
+    `RuntimeError`, and soundfile answers an unreadable clip with a subclass
+    of one. Reported by class alone they all reach the menu bar as
+    "Offline synthesis failed (RuntimeError)", which names neither the file
+    nor the fix — so every phase that can fail for an ordinary, non-content
+    reason says what it was doing, or what to do about it.
+    """
+
+    def setUp(self):
+        self._logged = []
+        patcher = unittest.mock.patch.object(
+            server, "log", lambda message: self._logged.append(message))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_missing_file_names_what_is_damaged(self):
+        with self.assertRaises(server.EngineError) as caught:
+            server._require_files(server.MODEL_FILES_DAMAGED, "/nonexistent/model.safetensors")
+        self.assertEqual(str(caught.exception), server.MODEL_FILES_DAMAGED)
+
+    def test_empty_file_counts_as_damaged(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile() as empty:
+            with self.assertRaises(server.EngineError) as caught:
+                server._require_files(server.VOCODER_DAMAGED, empty.name)
+        self.assertEqual(str(caught.exception), server.VOCODER_DAMAGED)
+
+    def test_phase_names_itself_when_there_is_no_single_fix(self):
+        with self.assertRaises(server.EngineError) as caught:
+            with server.during("generating Norwegian speech"):
+                raise RuntimeError("secret text the user selected")
+        self.assertEqual(str(caught.exception),
+                         "RuntimeError while generating Norwegian speech")
+        self.assertNotIn("secret", str(caught.exception))
+
+    def test_phase_with_one_fix_reports_the_fix(self):
+        with self.assertRaises(server.EngineError) as caught:
+            with server.during("reading the Norwegian model weights",
+                               server.MODEL_FILES_DAMAGED):
+                raise RuntimeError("[load_safetensors] Invalid json header length")
+        self.assertEqual(str(caught.exception), server.MODEL_FILES_DAMAGED)
+
+    def test_the_class_and_frames_still_reach_the_log(self):
+        with self.assertRaises(server.EngineError):
+            with server.during("loading the mel vocoder", server.VOCODER_DAMAGED):
+                raise RuntimeError("secret text the user selected")
+        logged = " ".join(self._logged)
+        self.assertIn("RuntimeError", logged)
+        self.assertIn("test_server.py:", logged)
+        self.assertNotIn("secret", logged)
+
+    def test_running_out_of_memory_is_not_reported_as_a_mystery(self):
+        for failure in (MemoryError(),
+                        RuntimeError("[metal::malloc] Attempting to allocate 99 GB")):
+            with self.assertRaises(server.EngineError) as caught:
+                with server.during("generating Norwegian speech",
+                                   server.MODEL_FILES_DAMAGED):
+                    raise failure
+            self.assertTrue(str(caught.exception).startswith("ran out of memory"),
+                            str(caught.exception))
+
+    def test_cancellation_is_never_turned_into_a_failure(self):
+        with self.assertRaises(server.CancelledError):
+            with server.during("generating Norwegian speech"):
+                raise server.CancelledError("client disconnected")
+
+    def test_an_already_named_failure_passes_through_unchanged(self):
+        with self.assertRaises(server.EngineError) as caught:
+            with server.during("generating Norwegian speech"):
+                raise server.EngineError("reference recording is too short")
+        self.assertEqual(str(caught.exception), "reference recording is too short")

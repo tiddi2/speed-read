@@ -74,6 +74,43 @@ import Testing
         }
     }
 
+    /// The failure this file was written after: the daemon reported an
+    /// unexpected exception by class alone, so a missing model file, an
+    /// unreadable recording and a Mac out of memory all arrived as
+    /// "Offline synthesis failed (RuntimeError)" — three different fixes
+    /// behind one word.
+    @Test func theRuntimeErrorCasesAreToldApart() {
+        let damaged = LocalVoices.failureMessage(
+            for: .http(status: 500, body: "f5: the Norwegian model files are missing or damaged"))
+        #expect(damaged?.contains("Settings → General") == true)
+
+        let vocoder = LocalVoices.failureMessage(
+            for: .http(status: 500, body: "f5: the mel vocoder is missing or damaged"))
+        #expect(vocoder?.contains("Settings → General") == true)
+
+        let recording = LocalVoices.failureMessage(
+            for: .http(status: 500, body: "f5: reference recording could not be read"))
+        #expect(recording?.contains("Settings → Voices") == true)
+
+        let architecture = LocalVoices.failureMessage(
+            for: .http(status: 500, body: "f5: checkpoint does not fit the F5 architecture"))
+        #expect(architecture?.contains("F5 variant") == true)
+
+        let memory = LocalVoices.failureMessage(
+            for: .http(status: 500, body: "f5: ran out of memory while generating Norwegian speech"))
+        #expect(memory?.contains("memory") == true)
+        #expect(memory?.contains(LocalVoices.logHint) == false)
+    }
+
+    /// What is left over still says which phase it died in, because that is
+    /// the difference between a name to look up and a name to guess at.
+    @Test func anUnclassifiedFailureStillNamesItsPhase() {
+        let message = LocalVoices.failureMessage(
+            for: .http(status: 500, body: "f5: RuntimeError while generating Norwegian speech"))
+        #expect(message?.contains("generating Norwegian speech") == true)
+        #expect(message?.contains(LocalVoices.logHint) == true)
+    }
+
     /// The prefix is the whole identification mechanism, so a message that
     /// merely starts with the letters must not be mistaken for a tagged one.
     @Test func onlyTheTagCountsAsAnOfflineFailure() {

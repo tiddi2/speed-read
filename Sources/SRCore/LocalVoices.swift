@@ -104,19 +104,33 @@ public enum LocalVoices {
             return "The voice's recording is too short to read with — record a longer one in Settings → Voices."
         case "reference recording is not 24 kHz",
              "reference recording has no transcript",
+             "reference recording could not be read",
              "voice files escape the voices root":
             return "That voice's files are damaged — record it again in Settings → Voices."
         case "language not installed":
             return "The offline voice cannot speak that language — switch to Cloud or Auto."
-        case "f5 vocabulary is empty", "verified model path missing":
+        case "f5 vocabulary is empty", "verified model path missing",
+             "the Norwegian model files are missing or damaged",
+             "the mel vocoder is missing or damaged":
             return "The offline model files are damaged — reinstall the voice in Settings → General."
+        case "checkpoint does not fit the F5 architecture":
+            return "The Norwegian model did not load — switch the F5 variant in Settings → Voices, or reinstall it in Settings → General."
 
         // Transport and generation. Nothing the user can act on directly, so
         // these name the log rather than pretending to offer a fix.
         case "daemon unavailable", "socket I/O failed":
             return "The offline voice stopped responding. Quit and reopen sr; if it keeps happening, see \(logHint)."
         default:
-            return "Offline synthesis failed (\(reason)). See \(logHint)."
+            // Out of memory carries the phase it ran out in, so it cannot be
+            // a case above — but it is as actionable as any of them.
+            if reason.hasPrefix("ran out of memory") {
+                return "The offline voice ran out of memory — close some apps, or read a shorter selection."
+            }
+            // Everything else at least says which phase it died in
+            // ("RuntimeError while generating Norwegian speech"). Lead with
+            // that rather than burying it behind boilerplate: the first line
+            // is all a menu row is guaranteed to show.
+            return "Offline synthesis failed: \(reason). See \(logHint)."
         }
     }
 

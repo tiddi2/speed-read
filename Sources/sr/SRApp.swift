@@ -258,7 +258,14 @@ struct MenuView: View {
             .buttonStyle(.borderless)
         }
         if let message = state.statusMessage {
-            Text(message).font(.caption).foregroundStyle(.orange)
+            // Wrap rather than truncate. A menu row is one line wide by
+            // default, so a failure that names a file, a phase and a log path
+            // arrived as "Offline synthesis failed (RuntimeError). See ~/Lib…"
+            // — the part that says what to do next was the part cut off.
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
         }
         // Either offline voice, because the panel is what stays visible once
         // the Settings window is closed — and a gigabyte-scale download is

@@ -107,6 +107,27 @@
   stays visible once the Settings window is closed — and a download this size
   is exactly the thing you close the window and walk away from.
 
+- An offline synthesis failure now names itself, and the menu bar shows the
+  whole message. A Norwegian read that failed reported `Offline synthesis
+  failed (RuntimeError)` — and the menu bar panel truncated even that at one
+  line, so the half that said where to look never appeared. `RuntimeError` is
+  what mlx raises for a checkpoint that is missing, truncated or stored in a
+  dtype it cannot read, what Metal raises when it cannot allocate, and what
+  soundfile subclasses for a clip it cannot decode: four unrelated problems
+  with four different fixes, behind one word.
+
+  The daemon still never relays an exception's message — it can quote the text
+  being read — but it now says which phase it was in when the failure
+  happened, from a fixed literal, and reports the condition instead where
+  every way of failing has one fix: model files missing or damaged, vocoder
+  missing or damaged, a checkpoint that does not fit the architecture it is
+  being loaded as, a recording that cannot be read, out of memory. Each maps
+  to the step that fixes it — reinstall in Settings → General, re-record in
+  Settings → Voices, or the architecture switch in Settings → Voices. What is
+  left over carries the traceback's file names and line numbers, which carry
+  no text either and are the difference between a name to look up and a name
+  to guess at. Status rows in the menu bar panel wrap instead of truncating.
+
 - A failed signing-identity setup no longer aborts `make update`, and says what
   went wrong when it does fail. `setup-signing.sh` judged its two certificate
   import routes by exit status, but a PKCS#12 that macOS accepts without
