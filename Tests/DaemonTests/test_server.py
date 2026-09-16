@@ -132,7 +132,7 @@ class GenerationFailureTests(unittest.TestCase):
         # verified without downloading numpy or the actual voice model.
         with patch.object(server, "model", model), patch.object(server, "log"), \
                 patch.dict(sys.modules, {"numpy": Mock()}):
-            with self.assertRaisesRegex(RuntimeError, "^local synthesis workaround exhausted$"):
+            with self.assertRaisesRegex(server.EngineError, "^local synthesis workaround exhausted$"):
                 server._generate_segments("fragment", "bf_lily", 1, "b", None)
         self.assertEqual(model.generate.call_count, 4)
 
@@ -208,6 +208,45 @@ class EngineRoutingTests(unittest.TestCase):
                 {"token": "test", "text": "Hei.", "voice": voice, "engine": "f5"},
                 f5_configured=lambda: True)
             self.assertEqual(response["message"], "invalid request fields", voice)
+
+    def test_engine_errors_reach_the_client_verbatim(self):
+        """The daemon's own diagnosis is the only clue the app can show.
+
+        Before this, every generation failure arrived as the exception class
+        name, so a missing reference recording and a corrupt checkpoint were
+        both "RuntimeError" behind an HTTP 500.
+        """
+        def boom(*_a, **_k):
+            raise server.EngineError("voice is missing its reference recording")
+
+        response = self._handle(
+            {"token": "test", "text": "Hei.", "voice": "min-stemme",
+             "engine": "f5"},
+            f5_configured=lambda: True, generate_audio=boom)
+        self.assertEqual(response["status"], "error")
+        self.assertEqual(response["message"],
+                         "voice is missing its reference recording")
+
+    def test_unexpected_exceptions_still_hide_their_message(self):
+        """P-5: an exception sr did not author may quote the text being read."""
+        def boom(*_a, **_k):
+            raise ValueError("secret text the user selected")
+
+        response = self._handle(
+            {"token": "test", "text": "Hei.", "voice": "min-stemme",
+             "engine": "f5"},
+            f5_configured=lambda: True, generate_audio=boom)
+        self.assertEqual(response["status"], "error")
+        self.assertEqual(response["message"], "ValueError")
+        self.assertNotIn("secret", str(response))
+
+    def test_traceback_frames_name_places_not_content(self):
+        try:
+            raise ValueError("secret text the user selected")
+        except ValueError as e:
+            frames = server._traceback_frames(e)
+        self.assertNotIn("secret", frames)
+        self.assertIn("test_server.py:", frames)
 
     def test_kokoro_still_rejects_the_hyphen_f5_allows(self):
         response = self._handle(

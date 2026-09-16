@@ -476,14 +476,12 @@ enum HeadlessCLI {
     }
 
     private static func safeMessage(for error: TTSError) -> String {
+        // Offline failures name the real cause; see LocalVoices.failureMessage.
+        if let local = LocalVoices.failureMessage(for: error) { return local }
         switch error {
         case .missingAPIKey: return "missing ElevenLabs API key"
         case .http(let status, _): return "provider HTTP \(status)"
         case .invalidAudio: return "provider returned invalid audio"
-        case .network("kokoro: incompatible daemon"):
-            return "local voice needs a restart; quit all sr instances, then reopen sr"
-        case .network(let detail) where detail.hasPrefix("kokoro"):
-            return "local voice unavailable"
         case .network: return "provider network error"
         case .budgetExceeded: return "daily cloud budget reached"
         case .cancelled: return "cancelled"

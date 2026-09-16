@@ -126,6 +126,24 @@ def log(msg):
         pass
 
 
+def _traceback_frames(exc, limit=4):
+    """Where an exception came from, as file:line names only.
+
+    Deliberately not `traceback.format_exc()`: that includes the exception
+    message and the source line, either of which can quote the text being
+    read (P-5). Frame file names and line numbers cannot.
+    """
+    import traceback
+
+    try:
+        frames = traceback.extract_tb(exc.__traceback__)[-limit:]
+        return " <- ".join(
+            f"{os.path.basename(f.filename)}:{f.lineno}" for f in reversed(frames)
+        ) or "no frames"
+    except Exception:
+        return "unavailable"
+
+
 # ── Globals ──────────────────────────────────────────────────────────
 
 model = None
@@ -160,7 +178,7 @@ def load_tts_model():
         log("loading model from verified snapshot path")
         model = load_model(MODEL_PATH)
     elif managed_mode:
-        raise RuntimeError("verified model path missing")
+        raise EngineError("verified model path missing")
     else:
         log(f"loading model {MODEL_ID}")
         model = load_model(MODEL_ID)
@@ -180,6 +198,19 @@ def warmup_pipeline():
 
 class CancelledError(Exception):
     """Raised when a generation is cancelled (client disconnected)."""
+
+
+class EngineError(Exception):
+    """A failure the daemon itself diagnosed, safe to report verbatim.
+
+    P-5 keeps request text out of logs and off the wire, which is why an
+    unexpected exception is reported as its class name alone: the message
+    could quote the text being read. But these messages are fixed literals
+    written here, naming a condition rather than any content, so relaying
+    them costs nothing and is the difference between "HTTP 500" and knowing
+    which of a dozen setup problems to fix. Never raise this with a message
+    built from a request field.
+    """
 
 
 def _generate_segments(text, voice, speed, lang_code, cancel_check, depth=0):
@@ -240,7 +271,7 @@ def _generate_segments(text, voice, speed, lang_code, cancel_check, depth=0):
         # Never report success (and cache incomplete audio) when a fragment
         # could not be spoken. The client will surface the failure to the user.
         log(f"broadcast_shapes workaround exhausted: text_len={len(text)}")
-        raise RuntimeError("local synthesis workaround exhausted") from None
+        raise EngineError("local synthesis workaround exhausted") from None
 
 
 def _trim_edge_silence(audio, sample_rate):
@@ -288,13 +319,13 @@ def generate_audio(text, voice, speed, lang_code, cancel_check=None,
         sample_rate = pairs[-1][1] if pairs else None
 
         if not segments or sample_rate is None:
-            raise RuntimeError("model produced no audio")
+            raise EngineError("model produced no audio")
 
         audio = np.concatenate(segments) if len(segments) > 1 else segments[0]
         audio_write(out_path, audio, sample_rate, format="wav")
 
         if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
-            raise RuntimeError("audio file empty after write")
+            raise EngineError("audio file empty after write")
 
         del segments, audio
         return out_path
@@ -453,7 +484,7 @@ def load_f5_model():
         if f5_model is not None:
             return f5_model
         if not f5_configured():
-            raise RuntimeError("f5 engine not installed")
+            raise EngineError("f5 engine not installed")
 
         import mlx.core as mx
         from vocos_mlx import Vocos
@@ -472,7 +503,7 @@ def load_f5_model():
             entries = f.read().split("\n")
         vocab = {char: index for index, char in enumerate(entries)}
         if not vocab:
-            raise RuntimeError("f5 vocabulary is empty")
+            raise EngineError("f5 vocabulary is empty")
 
         weights = _f5_convert_weights(mx.load(weights_path, format="safetensors"))
 
@@ -526,9 +557,9 @@ def _f5_reference(voice):
     root = os.path.realpath(F5_VOICES_PATH) + os.sep
     for path in (audio_path, text_path):
         if not os.path.realpath(path).startswith(root):
-            raise RuntimeError("voice files escape the voices root")
+            raise EngineError("voice files escape the voices root")
     if not (os.path.isfile(audio_path) and os.path.isfile(text_path)):
-        raise RuntimeError("voice is missing its reference recording")
+        raise EngineError("voice is missing its reference recording")
 
     stamp = (os.path.getmtime(audio_path), os.path.getmtime(text_path))
     cached = _f5_reference_cache.get(voice)
@@ -537,15 +568,15 @@ def _f5_reference(voice):
 
     audio, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
     if sample_rate != F5_SAMPLE_RATE:
-        raise RuntimeError("reference recording is not 24 kHz")
+        raise EngineError("reference recording is not 24 kHz")
     audio = audio.mean(axis=1) if audio.shape[1] > 1 else audio[:, 0]
     if audio.size < F5_SAMPLE_RATE // 2:
-        raise RuntimeError("reference recording is too short")
+        raise EngineError("reference recording is too short")
 
     with open(text_path, encoding="utf-8") as f:
         transcript = f.read().strip()
     if not transcript:
-        raise RuntimeError("reference recording has no transcript")
+        raise EngineError("reference recording has no transcript")
 
     # Upstream conditions on a clip normalized to TARGET_RMS and scales the
     # result back, so a quiet reference does not make every read loud.
@@ -624,7 +655,7 @@ def _f5_generate_segments(text, voice, cancel_check, depth=0):
         audio = audio * rms_scale
     del wave
     if audio.size == 0:
-        raise RuntimeError("model produced no audio")
+        raise EngineError("model produced no audio")
     return [(audio, F5_SAMPLE_RATE)]
 
 
@@ -767,10 +798,18 @@ def handle_client(conn):
 
     except CancelledError:
         log("generation cancelled (client disconnected)")
+    except EngineError as e:
+        # Our own diagnosis, fixed wording, no request data — say it.
+        log(f"error: {e}")
+        send({"status": "error", "message": str(e)})
     except Exception as e:
         # Content-free (P-5): exception messages can embed request fragments,
-        # so neither logs nor the wire response include them.
-        log(f"error: {type(e).__name__}")
+        # so neither logs nor the wire response include them. The traceback's
+        # frames are our own and the libraries' file names and line numbers,
+        # which carry no request text and are what makes an unexpected
+        # failure diagnosable at all — without them "RuntimeError" is the
+        # whole story.
+        log(f"error: {type(e).__name__} at {_traceback_frames(e)}")
         send({"status": "error", "message": type(e).__name__})
     finally:
         try:

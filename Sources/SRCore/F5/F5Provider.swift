@@ -154,7 +154,10 @@ public struct F5Provider: TTSProvider {
                 throw TTSError.network(underlying:
                     "f5: quit and reopen sr to finish enabling the Norwegian voice")
             }
-            throw TTSError.http(status: 500, body: message)
+            // Tag it: the message is the daemon's own wording, and the
+            // error surface tells a local failure from a cloud one by
+            // this prefix alone.
+            throw TTSError.http(status: 500, body: "f5: \(message)")
         case .ok(let audioFilePath), .incompatible(let audioFilePath):
             // Trust boundary: only accept paths inside the daemon's tmp root.
             let tmpRoot = runtime.runtimePaths.tmpRoot.resolvingSymlinksInPath().path

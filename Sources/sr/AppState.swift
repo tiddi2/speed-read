@@ -1301,6 +1301,15 @@ final class AppState: ObservableObject {
     private func handleSynthesisError(_ error: TTSError) {
         stop()
         NSSound.beep()
+        // An offline read never touched the network, so it must not be
+        // described as a service or status code. Ask first; every other case
+        // below is genuinely ElevenLabs'.
+        // (.cancelled never matches — the mapper returns nil for it.)
+        if let local = LocalVoices.failureMessage(for: error) {
+            lastError = local
+            flashStatus(local)
+            return
+        }
         switch error {
         case .missingAPIKey:
             lastError = "No ElevenLabs API key — add one in Settings → Cost."
@@ -1314,12 +1323,6 @@ final class AppState: ObservableObject {
             lastError = "Synthesis error (HTTP \(status))."
         case .invalidAudio:
             lastError = "ElevenLabs returned invalid audio; the read was stopped."
-        case .network("kokoro: incompatible daemon"):
-            lastError = "Local voice needs a restart — quit all sr instances, then reopen sr."
-        case .network("kokoro: language not installed"):
-            lastError = "The offline voice cannot speak that language — switch to Cloud or Auto."
-        case .network(let detail) where detail.hasPrefix("kokoro"):
-            lastError = "Local voice unavailable."
         case .network:
             lastError = "Could not reach ElevenLabs."
         case .cancelled:

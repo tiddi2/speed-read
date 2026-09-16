@@ -144,7 +144,10 @@ public struct KokoroProvider: TTSProvider {
         }
         switch response {
         case .error(let message):
-            throw TTSError.http(status: 500, body: message)
+            // Tag it: the message is the daemon's own wording, and the
+            // error surface tells a local failure from a cloud one by
+            // this prefix alone.
+            throw TTSError.http(status: 500, body: "kokoro: \(message)")
         case .ok(let audioFilePath), .incompatible(let audioFilePath):
             // Trust boundary: only accept paths inside the daemon's tmp root.
             // We read the file AND delete its parent directory — a stale or
