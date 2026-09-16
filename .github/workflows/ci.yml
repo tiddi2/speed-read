@@ -21,9 +21,18 @@ jobs:
         run: swift --version
 
       - name: Verify local-runtime lock integrity
+        # Searched by directory, not by file: the pin moved to
+        # LocalRuntimeInstaller when the two offline voices started sharing one
+        # venv and one lock, and a check keyed to a file path fails loudly on a
+        # rename when it should be checking the invariant instead.
         run: |
           lock_hash="$(shasum -a 256 daemon/requirements.lock | cut -d ' ' -f 1)"
-          grep -q "$lock_hash" Sources/SRCore/Kokoro/KokoroInstaller.swift
+          if ! grep -rq "$lock_hash" Sources/SRCore/; then
+            echo "daemon/requirements.lock hashes to $lock_hash, which no" >&2
+            echo "compiled-in pin under Sources/SRCore matches. Update" >&2
+            echo "LocalRuntimeInstaller.requirementsLockSHA256." >&2
+            exit 1
+          fi
 
       - name: Test
         run: make test
@@ -35,4 +44,4 @@ jobs:
         run: |
           bash -n scripts/build-app.sh
           bash -n scripts/setup-signing.sh
-          python3 -m py_compile daemon/sr_tts_server.py
+          python3 -m py_compile daemon/sr_tts_server.py daemon/sr_f5_fetch.py
