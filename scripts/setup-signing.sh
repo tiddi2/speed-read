@@ -96,6 +96,18 @@ identity_hash() {
   fi | awk -v want="\"$IDENTITY_NAME\"" 'index($0, want) { print $2; exit }'
 }
 
+# Same lookup, but ignoring whether macOS currently considers the identity
+# *valid*. A self-signed certificate is not valid for code signing until it is
+# trusted, and `find-identity -v` hides exactly that state — which is how
+# "imported but untrusted" gets told apart from "never imported at all".
+any_identity_hash() {
+  if [ "$#" -gt 0 ] && [ -n "$1" ]; then
+    security find-identity "$1" 2>/dev/null
+  else
+    security find-identity 2>/dev/null
+  fi | awk -v want="\"$IDENTITY_NAME\"" 'index($0, want) { print $2; exit }'
+}
+
 # Keychain holding an sr-dev certificate made some other way — by hand in
 # Keychain Access, as the README used to instruct.
 foreign_keychain() {
@@ -130,7 +142,7 @@ add_to_search_list() {
 }
 
 create_identity() {
-  local kc pass tmp
+  local kc pass tmp import_log
   mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR"
 
   # A leftover sr-dev keychain we have no password for cannot be signed with
@@ -185,25 +197,60 @@ CNF
   # -T grants codesign use of the key; the partition list below is the second
   # half of the same permission on modern macOS. Without both, every build
   # raises a "codesign wants to access key sr-dev" password dialog.
+  #
+  # Both import routes are judged by what they leave in the keychain rather
+  # than by their exit status: a PKCS#12 that macOS accepts without pairing
+  # the key to the certificate exits 0 and still yields no identity, and the
+  # old `p12 || separate` form never retried in that case. Their output is
+  # kept so a failure below can show it instead of a bare "could not create".
+  import_log="$tmp/import.log"
+  : > "$import_log"
+
   if "$OPENSSL" pkcs12 -export -name "$IDENTITY_NAME" \
        -inkey "$tmp/sr-dev.key" -in "$tmp/sr-dev.crt" \
-       -out "$tmp/sr-dev.p12" -passout "pass:$pass" >/dev/null 2>&1 \
-     && security import "$tmp/sr-dev.p12" -k "$kc" -P "$pass" -f pkcs12 \
-          -T /usr/bin/codesign -T /usr/bin/security >/dev/null 2>&1; then
-    :
-  else
-    # Some openssl builds write a PKCS#12 macOS will not parse. Importing the
-    # key and the certificate separately yields the same identity.
+       -out "$tmp/sr-dev.p12" -passout "pass:$pass" >>"$import_log" 2>&1; then
+    security import "$tmp/sr-dev.p12" -k "$kc" -P "$pass" -f pkcs12 \
+      -T /usr/bin/codesign -T /usr/bin/security >>"$import_log" 2>&1 || true
+  fi
+
+  # Some openssl builds write a PKCS#12 macOS will not parse, or parses
+  # without forming an identity. Importing the key and the certificate
+  # separately yields the same identity.
+  if [ -z "$(any_identity_hash "$kc")" ]; then
     security import "$tmp/sr-dev.key" -k "$kc" -f openssl -t priv \
-      -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+      -T /usr/bin/codesign -T /usr/bin/security >>"$import_log" 2>&1 || true
     security import "$tmp/sr-dev.crt" -k "$kc" -f openssl -t cert \
-      -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+      -T /usr/bin/codesign -T /usr/bin/security >>"$import_log" 2>&1 || true
   fi
 
   security set-key-partition-list -S apple-tool:,apple:,codesign: \
     -s -k "$pass" "$kc" >/dev/null 2>&1 || true
 
-  [ -n "$(identity_hash "$kc")" ]
+  # A self-signed certificate is not valid for code signing until something
+  # trusts it, and the check below lists only valid identities. Trust it here
+  # rather than after the fact: the caller's trust_certificate() runs only
+  # once this function has already returned success, so it could never rescue
+  # the case where this is what failed.
+  if [ -z "$(identity_hash "$kc")" ] && [ -n "$(any_identity_hash "$kc")" ]; then
+    log "Trusting the $IDENTITY_NAME certificate for code signing."
+    log "(macOS may ask to authorize this once.)"
+    trust_certificate "$kc" || true
+  fi
+
+  [ -z "$(identity_hash "$kc")" ] || return 0
+
+  # Still nothing. Say which half is missing, so this is diagnosable on the
+  # first failure rather than the second.
+  if [ -n "$(any_identity_hash "$kc")" ]; then
+    warn "setup-signing.sh: the $IDENTITY_NAME key and certificate imported, but"
+    warn "macOS does not accept the certificate for code signing. Trusting it"
+    warn "failed or was declined; re-run and approve the authorization prompt."
+  else
+    warn "setup-signing.sh: no $IDENTITY_NAME key/certificate pair was formed in"
+    warn "$kc. Import output:"
+    sed 's/^/    /' "$import_log" >&2 || true
+  fi
+  return 1
 }
 
 # A self-signed certificate has no chain to a trusted root. Signing normally

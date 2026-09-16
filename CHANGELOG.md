@@ -38,6 +38,26 @@
   Hugging Face cache, so it rebuilds the environment rather than
   re-downloading anything. Until then, English reads fall back to the cloud.
 
+- A failed signing-identity setup no longer aborts `make update`, and says what
+  went wrong when it does fail. `setup-signing.sh` judged its two certificate
+  import routes by exit status, but a PKCS#12 that macOS accepts without
+  pairing the key to the certificate exits 0 and leaves no identity — so the
+  fallback import never ran, and the script gave up with a bare "could not
+  create the sr-dev identity" and no hint which half was missing. Both routes
+  are now judged by what they leave in the keychain, and their output is shown
+  when neither works.
+
+  It also self-signs into a chicken-and-egg: a fresh self-signed certificate is
+  not valid for code signing until something trusts it, and the existence check
+  lists only *valid* identities — while `trust_certificate()` ran only after
+  that check had already passed, so it could never rescue the one case it was
+  written for. Trust is now applied before giving up.
+
+  And because the script's own message says a failure means "builds stay ad-hoc
+  signed", `install` and `update` no longer stop on it: they warn and carry on,
+  which is what that message promises. `make setup-signing` on its own still
+  exits non-zero, so the failure is still visible when you ask for it directly.
+
 - Accessibility and Keychain access no longer reset on every `make update`.
   macOS keys the Accessibility (TCC) grant and a Keychain item's ACL on an app's
   code signature, and with no certificate on the machine `codesign` signs
