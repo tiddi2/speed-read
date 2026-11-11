@@ -33,11 +33,22 @@ public enum Chunker {
         var cursor = text.startIndex
         var cursorOffset = 0
         tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
-            let sentence = String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !sentence.isEmpty {
-                cursorOffset += text.distance(from: cursor, to: range.lowerBound)
-                cursor = range.lowerBound
-                raw.append((sentence, cursorOffset))
+            // A line break is a boundary even without punctuation (headings,
+            // list items, verse): NLTokenizer would otherwise run such lines
+            // together into one sentence.
+            var lineStart = range.lowerBound
+            while lineStart < range.upperBound {
+                let lineEnd = text[lineStart..<range.upperBound]
+                    .firstIndex(where: { $0.isNewline }) ?? range.upperBound
+                let line = String(text[lineStart..<lineEnd])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !line.isEmpty {
+                    let leading = text[lineStart..<lineEnd].prefix(while: { $0.isWhitespace }).count
+                    cursorOffset += text.distance(from: cursor, to: lineStart) + leading
+                    cursor = text.index(lineStart, offsetBy: leading)
+                    raw.append((line, cursorOffset))
+                }
+                lineStart = lineEnd < range.upperBound ? text.index(after: lineEnd) : lineEnd
             }
             return true
         }

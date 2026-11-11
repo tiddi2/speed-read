@@ -86,7 +86,10 @@ struct VoiceSettingsTab: View {
     private var voices: [Voice] {
         var all = state.availableVoices
         let selected = state.voiceID(for: language)
-        if !all.contains(where: { $0.id == selected }) {
+        // Keep the selected voice pinned to the top of the list.
+        if let index = all.firstIndex(where: { $0.id == selected }) {
+            all.insert(all.remove(at: index), at: 0)
+        } else {
             all.insert(Voice(id: selected, name: "Custom (\(selected.prefix(8))…)"), at: 0)
         }
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -16,6 +16,13 @@ import Testing
         #expect(chunks.allSatisfy { $0.text.count >= Chunker.minChunkLength || chunks.count == 1 })
     }
 
+    @Test func lineBreaksSplitWithoutPunctuation() {
+        let chunks = Chunker.split("Chapter one begins here\nThe second heading line\nAnother unpunctuated line")
+        #expect(chunks.map(\.text) == [
+            "Chapter one begins here", "The second heading line", "Another unpunctuated line",
+        ])
+    }
+
     @Test func emptyInput() {
         #expect(Chunker.split("").isEmpty)
         #expect(Chunker.split("   \n  ").isEmpty)

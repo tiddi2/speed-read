@@ -16,6 +16,7 @@ public struct ElevenLabsProvider: TTSProvider {
         ("Turbo v2.5 — fast, ½ cost", "eleven_turbo_v2_5"),
         ("Multilingual v2 — max quality", "eleven_multilingual_v2"),
         ("v3 — most expressive", "eleven_v3"),
+        ("v4 Turbo — low latency", "eleven_v4_turbo"),
     ]
 
     /// Models that accept `language_code` and will therefore stay in one
